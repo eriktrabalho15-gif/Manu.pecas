@@ -4,6 +4,9 @@ const THEME_KEY = "pecas-transporte-tema";
 const USERS_KEY = "pecas-transporte-usuarios";
 const DELETED_USERS_KEY = "pecas-transporte-usuarios-excluidos";
 const NOTIFICATION_READ_KEY = "pecas-transporte-notificacoes-lidas";
+const CUSTOM_PARTS_KEY = "pecas-transporte-pecas-cadastradas";
+const PART_REGISTRATIONS_KEY = "pecas-transporte-cadastros-pecas";
+const supabaseClient = window.manuPecasSupabase || null;
 
 const partsCatalog = Array.isArray(globalThis.PARTS_CATALOG) ? globalThis.PARTS_CATALOG : [];
 const wmsLocations = globalThis.WMS_LOCATIONS && typeof globalThis.WMS_LOCATIONS === "object" ? globalThis.WMS_LOCATIONS : {};
@@ -47,6 +50,8 @@ const seedRequests = [];
 let requests = loadRequests();
 let managedUsers = loadManagedUsers();
 let deletedUsers = loadDeletedUsers();
+let customParts = loadCustomParts();
+let partRegistrations = loadPartRegistrations();
 let currentUser = loadSession();
 let currentFilter = "solicitacao";
 let currentPage = "request";
@@ -73,6 +78,11 @@ const requestTemplate = document.querySelector("#request-card-template");
 const itemTemplate = document.querySelector("#item-line-template");
 const itemLines = document.querySelector("#item-lines");
 const addItemButton = document.querySelector("#add-item-button");
+const requestPartRegistrationButton = document.querySelector("#request-part-registration-button");
+const partRegistrationDialog = document.querySelector("#part-registration-dialog");
+const partRegistrationForm = document.querySelector("#part-registration-form");
+const partRegistrationClose = document.querySelector("#part-registration-close");
+const partRegistrationMessage = document.querySelector("#part-registration-message");
 const tabButtons = document.querySelectorAll(".tab-button");
 const pages = document.querySelectorAll(".page");
 const filterButtons = document.querySelectorAll(".filter-button");
@@ -90,6 +100,7 @@ const approvalList = document.querySelector("#approval-list");
 const purchaseOverviewList = document.querySelector("#purchase-overview-list");
 const userForm = document.querySelector("#user-form");
 const userList = document.querySelector("#user-list");
+const partRegistrationList = document.querySelector("#part-registration-list");
 const slaRequest = document.querySelector("#sla-request");
 const slaService = document.querySelector("#sla-service");
 const slaBuy = document.querySelector("#sla-buy");
@@ -207,6 +218,17 @@ form.addEventListener("submit", (event) => {
 
 addItemButton.addEventListener("click", () => addItemLine());
 
+requestPartRegistrationButton.addEventListener("click", () => openPartRegistrationDialog());
+
+partRegistrationClose.addEventListener("click", () => {
+  partRegistrationDialog.close();
+});
+
+partRegistrationForm.addEventListener("submit", (event) => {
+  event.preventDefault();
+  createPartRegistration(new FormData(partRegistrationForm));
+});
+
 tabButtons.forEach((button) => {
   button.addEventListener("click", () => setPage(button.dataset.page));
 });
@@ -262,6 +284,23 @@ userList.addEventListener("click", (event) => {
   }
 });
 
+partRegistrationList.addEventListener("click", (event) => {
+  const button = event.target.closest("button[data-part-action]");
+  if (!button) return;
+
+  const row = button.closest(".part-registration-row");
+  const id = row?.dataset.id;
+  if (!id) return;
+
+  if (button.dataset.partAction === "save") {
+    completePartRegistration(id, row.querySelector(".created-part-code").value);
+  }
+
+  if (button.dataset.partAction === "delete") {
+    deletePartRegistration(id);
+  }
+});
+
 document.addEventListener("click", (event) => {
   if (!event.target.closest(".part-search")) {
     document.querySelectorAll(".suggestions").forEach((box) => box.classList.remove("open"));
@@ -278,7 +317,7 @@ if (currentUser) {
   body.dataset.view = "login";
 }
 
-function startApp() {
+async function startApp() {
   body.dataset.view = "app";
   body.dataset.role = currentUser.role;
   sessionLabel.textContent = `${currentUser.label} | ${currentUser.email}`;
@@ -286,6 +325,7 @@ function startApp() {
   currentPage = currentUser.role === "pcm" ? "request" : currentUser.role === "compras" ? "purchase" : "pending";
   currentFilter = currentUser.role === "cd" ? "cd" : "solicitacao";
   resetItemLines();
+  await syncFromSupabase();
   setPage(currentPage);
   render();
 }
@@ -539,8 +579,91 @@ function normalizeItem(item, requestStatus = "solicitacao") {
   return { ...item, quantity, availableQty: 0, cdQty: 0, purchaseQty: 0, withdrawnQty: 0, purchaseApproval: item.purchaseApproval || "" };
 }
 
+async function syncFromSupabase() {
+  if (!supabaseClient) return;
+
+  try {
+    const [remoteRequests, remoteUsers, remoteDeletedUsers, remoteCustomParts, remotePartRegistrations] = await Promise.all([
+      loadSupabaseRows("manupecas_requests", "id"),
+      loadSupabaseRows("manupecas_users", "email"),
+      loadSupabaseDeletedUsers(),
+      loadSupabaseRows("manupecas_custom_parts", "code"),
+      loadSupabaseRows("manupecas_part_registrations", "id"),
+    ]);
+
+    if (remoteRequests) {
+      requests = remoteRequests.map(normalizeRequest).sort((a, b) => String(b.createdAt || "").localeCompare(String(a.createdAt || "")));
+      localStorage.setItem(REQUESTS_KEY, JSON.stringify(requests));
+    }
+    if (remoteUsers) {
+      managedUsers = remoteUsers;
+      localStorage.setItem(USERS_KEY, JSON.stringify(managedUsers));
+    }
+    if (remoteDeletedUsers) {
+      deletedUsers = remoteDeletedUsers;
+      localStorage.setItem(DELETED_USERS_KEY, JSON.stringify(deletedUsers));
+    }
+    if (remoteCustomParts) {
+      customParts = remoteCustomParts;
+      localStorage.setItem(CUSTOM_PARTS_KEY, JSON.stringify(customParts));
+    }
+    if (remotePartRegistrations) {
+      partRegistrations = remotePartRegistrations;
+      localStorage.setItem(PART_REGISTRATIONS_KEY, JSON.stringify(partRegistrations));
+    }
+  } catch (error) {
+    console.warn("Supabase indisponível. Usando dados locais.", error);
+  }
+}
+
+async function loadSupabaseRows(table, keyField) {
+  const { data, error } = await supabaseClient.from(table).select(`${keyField}, data`);
+  if (error) {
+    console.warn(`Erro ao carregar ${table}:`, error.message);
+    return null;
+  }
+  return (data || []).map((row) => row.data).filter(Boolean);
+}
+
+async function loadSupabaseDeletedUsers() {
+  const { data, error } = await supabaseClient.from("manupecas_deleted_users").select("email");
+  if (error) {
+    console.warn("Erro ao carregar usuários excluídos:", error.message);
+    return null;
+  }
+  return (data || []).map((row) => row.email).filter(Boolean);
+}
+
+function upsertSupabaseRows(table, keyField, rows) {
+  if (!supabaseClient) return;
+  const payload = rows.map((row) => ({ [keyField]: row[keyField], data: row, updated_at: new Date().toISOString() }));
+  supabaseClient.from(table).upsert(payload, { onConflict: keyField }).then(({ error }) => {
+    if (error) console.warn(`Erro ao salvar ${table}:`, error.message);
+  });
+}
+
+function replaceSupabaseDeletedUsers() {
+  if (!supabaseClient) return;
+  supabaseClient.from("manupecas_deleted_users").delete().neq("email", "__never__").then(({ error }) => {
+    if (error) {
+      console.warn("Erro ao limpar usuários excluídos:", error.message);
+      return;
+    }
+    if (deletedUsers.length === 0) return;
+    supabaseClient.from("manupecas_deleted_users").upsert(deletedUsers.map((email) => ({ email, updated_at: new Date().toISOString() })), { onConflict: "email" });
+  });
+}
+
+function deleteSupabaseRow(table, keyField, keyValue) {
+  if (!supabaseClient) return;
+  supabaseClient.from(table).delete().eq(keyField, keyValue).then(({ error }) => {
+    if (error) console.warn(`Erro ao excluir ${table}:`, error.message);
+  });
+}
+
 function saveRequests() {
   localStorage.setItem(REQUESTS_KEY, JSON.stringify(requests));
+  upsertSupabaseRows("manupecas_requests", "id", requests);
 }
 
 function loadManagedUsers() {
@@ -557,6 +680,7 @@ function loadManagedUsers() {
 
 function saveManagedUsers() {
   localStorage.setItem(USERS_KEY, JSON.stringify(managedUsers));
+  upsertSupabaseRows("manupecas_users", "email", managedUsers);
 }
 
 function loadDeletedUsers() {
@@ -569,6 +693,43 @@ function loadDeletedUsers() {
 
 function saveDeletedUsers() {
   localStorage.setItem(DELETED_USERS_KEY, JSON.stringify(deletedUsers));
+  replaceSupabaseDeletedUsers();
+}
+
+function loadCustomParts() {
+  try {
+    return JSON.parse(localStorage.getItem(CUSTOM_PARTS_KEY) || "[]");
+  } catch {
+    return [];
+  }
+}
+
+function saveCustomParts() {
+  localStorage.setItem(CUSTOM_PARTS_KEY, JSON.stringify(customParts));
+  upsertSupabaseRows("manupecas_custom_parts", "code", customParts);
+}
+
+function loadPartRegistrations() {
+  try {
+    return JSON.parse(localStorage.getItem(PART_REGISTRATIONS_KEY) || "[]");
+  } catch {
+    return [];
+  }
+}
+
+function savePartRegistrations() {
+  localStorage.setItem(PART_REGISTRATIONS_KEY, JSON.stringify(partRegistrations));
+  upsertSupabaseRows("manupecas_part_registrations", "id", partRegistrations);
+}
+
+function getAvailableParts() {
+  const seen = new Set();
+  return [...customParts, ...partsCatalog].filter((part) => {
+    const code = String(part.code || "").trim();
+    if (!code || seen.has(code)) return false;
+    seen.add(code);
+    return true;
+  });
 }
 
 function getAllAccounts() {
@@ -620,7 +781,10 @@ function addItemLine() {
   const searchInput = line.querySelector('[name="partLookup"]');
   const suggestions = line.querySelector(".suggestions");
 
-  searchInput.addEventListener("input", () => updateSuggestions(line));
+  searchInput.addEventListener("input", () => {
+    searchInput.setCustomValidity("");
+    updateSuggestions(line);
+  });
   searchInput.addEventListener("focus", () => updateSuggestions(line));
   searchInput.addEventListener("keydown", (event) => {
     if (event.key === "Escape") suggestions.classList.remove("open");
@@ -658,14 +822,26 @@ function updateSuggestions(line) {
     suggestions.append(button);
   });
 
-  suggestions.classList.toggle("open", matches.length > 0);
+  if (matches.length === 0) {
+    const button = document.createElement("button");
+    button.type = "button";
+    button.className = "suggest-registration";
+    button.innerHTML = `<strong>Solicitar cadastro</strong><span>${escapeHtml(input.value.trim())}</span>`;
+    button.addEventListener("click", () => {
+      suggestions.classList.remove("open");
+      openPartRegistrationDialog(input.value.trim());
+    });
+    suggestions.append(button);
+  }
+
+  suggestions.classList.toggle("open", matches.length > 0 || query.length >= 2);
 }
 
 function findParts(query, limit) {
   const starts = [];
   const contains = [];
 
-  for (const part of partsCatalog) {
+  for (const part of getAvailableParts()) {
     const code = String(part.code).toLowerCase();
     const description = String(part.description).toLowerCase();
     if (code.startsWith(query) || description.startsWith(query)) {
@@ -681,15 +857,25 @@ function findParts(query, limit) {
 
 function collectItems() {
   const lines = [...itemLines.querySelectorAll(".item-line")];
-  return lines
-    .map((line) => {
+  const items = [];
+  let hasInvalidPart = false;
+
+  for (const line of lines) {
       const input = line.querySelector('[name="partLookup"]');
       const lookup = input.value.trim();
       const quantity = Number(line.querySelector('[name="partQuantity"]').value);
-      if (!lookup || quantity < 1) return null;
-      return { ...resolvePart(input), quantity, availableQty: 0, cdQty: 0, purchaseQty: 0 };
-    })
-    .filter(Boolean);
+      if (!lookup || quantity < 1) continue;
+      const part = resolvePart(input);
+      if (!part) {
+        input.setCustomValidity("Peça não cadastrada. Solicite o cadastro antes de abrir a solicitação.");
+        input.reportValidity();
+        hasInvalidPart = true;
+        break;
+      }
+      items.push({ ...part, quantity, availableQty: 0, cdQty: 0, purchaseQty: 0 });
+  }
+
+  return hasInvalidPart ? [] : items;
 }
 
 function resolvePart(input) {
@@ -699,19 +885,14 @@ function resolvePart(input) {
 
   const value = input.value.trim();
   const normalized = value.toLowerCase();
-  const found = partsCatalog.find((part) => {
+  const found = getAvailableParts().find((part) => {
     const full = `${part.code} - ${part.description}`.toLowerCase();
     return normalized === String(part.code).toLowerCase() || normalized === String(part.description).toLowerCase() || normalized === full;
   });
 
   if (found) return found;
 
-  const pieces = value.split(" - ");
-  if (pieces.length >= 2) {
-    return { code: pieces[0].trim(), description: pieces.slice(1).join(" - ").trim() };
-  }
-
-  return { code: "S/C", description: value };
+  return null;
 }
 
 function makeCode() {
@@ -734,6 +915,7 @@ function render() {
   }
   if (currentPage === "admin") {
     renderUsers();
+    renderPartRegistrations();
     return;
   }
   if (currentPage === "approval") {
@@ -1626,6 +1808,127 @@ function renderUsers() {
     .join("");
 }
 
+function canManagePartRegistrations() {
+  return ["erik.lima", "bruno.medici"].includes(currentUser?.email);
+}
+
+function openPartRegistrationDialog(description = "") {
+  partRegistrationMessage.textContent = "";
+  partRegistrationMessage.className = "password-message";
+  partRegistrationForm.reset();
+  if (description) {
+    partRegistrationForm.elements.description.value = description;
+  }
+  partRegistrationDialog.showModal();
+}
+
+function createPartRegistration(data) {
+  const description = String(data.get("description") || "").trim();
+  const originalCode = String(data.get("originalCode") || "").trim();
+
+  if (!description || !originalCode) {
+    partRegistrationMessage.textContent = "Informe a descrição e o código original.";
+    partRegistrationMessage.className = "password-message error";
+    return;
+  }
+
+  const alreadyPending = partRegistrations.some((item) => {
+    return item.status === "pending" && item.description.toLowerCase() === description.toLowerCase() && item.originalCode.toLowerCase() === originalCode.toLowerCase();
+  });
+
+  if (alreadyPending) {
+    partRegistrationMessage.textContent = "Esse cadastro já está pendente para o admin.";
+    partRegistrationMessage.className = "password-message error";
+    return;
+  }
+
+  partRegistrations = [
+    {
+      id: `CAD-${Date.now()}`,
+      description,
+      originalCode,
+      requestedBy: currentUser.name || currentUser.label,
+      requestedByEmail: currentUser.email,
+      createdAt: new Date().toISOString(),
+      status: "pending",
+      createdCode: "",
+      completedAt: "",
+      completedBy: "",
+    },
+    ...partRegistrations,
+  ];
+  savePartRegistrations();
+  renderPartRegistrations();
+  partRegistrationMessage.textContent = "Cadastro enviado para Erik e Bruno.";
+  partRegistrationMessage.className = "password-message success";
+  setTimeout(() => partRegistrationDialog.close(), 450);
+}
+
+function renderPartRegistrations() {
+  if (!partRegistrationList) return;
+  const canManage = canManagePartRegistrations();
+
+  if (partRegistrations.length === 0) {
+    partRegistrationList.innerHTML = '<div class="empty-state compact-empty">Nenhuma solicitação de cadastro de peça.</div>';
+    return;
+  }
+
+  partRegistrationList.innerHTML = partRegistrations
+    .map((item) => {
+      const done = item.status === "done";
+      return `<article class="part-registration-row ${done ? "done" : ""}" data-id="${escapeAttr(item.id)}">
+        <div>
+          <strong>${escapeHtml(item.description)}</strong>
+          <span>Código original: ${escapeHtml(item.originalCode)}</span>
+          <small>Solicitado por ${escapeHtml(item.requestedBy || "-")} em ${formatDateOrDash(item.createdAt)}</small>
+        </div>
+        <label>
+          <small>Código SAP criado</small>
+          <input class="created-part-code" value="${escapeAttr(item.createdCode || "")}" ${done || !canManage ? "disabled" : ""} placeholder="Ex.: 30000000" />
+        </label>
+        <div><small>Status</small><b>${done ? "Cadastrado" : "Pendente SAP"}</b></div>
+        <div class="user-actions">
+          <button class="secondary-action compact" type="button" data-part-action="save" ${done || !canManage ? "disabled" : ""}>Salvar cadastro</button>
+          <button class="danger-action compact" type="button" data-part-action="delete" ${!canManage ? "disabled" : ""}>Excluir</button>
+        </div>
+      </article>`;
+    })
+    .join("");
+}
+
+function completePartRegistration(id, code) {
+  if (!canManagePartRegistrations()) return;
+  const cleanCode = String(code || "").trim();
+  const registration = partRegistrations.find((item) => item.id === id);
+  if (!registration || !cleanCode) return;
+
+  const part = { code: cleanCode, description: registration.description };
+  customParts = customParts.filter((item) => String(item.code) !== cleanCode);
+  customParts.unshift(part);
+  partRegistrations = partRegistrations.map((item) =>
+    item.id === id
+      ? {
+          ...item,
+          status: "done",
+          createdCode: cleanCode,
+          completedAt: new Date().toISOString(),
+          completedBy: currentUser.name || currentUser.label,
+        }
+      : item
+  );
+  saveCustomParts();
+  savePartRegistrations();
+  renderPartRegistrations();
+}
+
+function deletePartRegistration(id) {
+  if (!canManagePartRegistrations()) return;
+  partRegistrations = partRegistrations.filter((item) => item.id !== id);
+  savePartRegistrations();
+  deleteSupabaseRow("manupecas_part_registrations", "id", id);
+  renderPartRegistrations();
+}
+
 function createRoleOptions(selectedRole) {
   return ["pcm", "almox", "cd", "compras", "manager", "admin"]
     .map((role) => `<option value="${role}" ${role === selectedRole ? "selected" : ""}>${roleLabel(role)}</option>`)
@@ -1697,6 +2000,7 @@ function deleteUser(email) {
   }
   saveManagedUsers();
   saveDeletedUsers();
+  deleteSupabaseRow("manupecas_users", "email", email);
   renderUsers();
 }
 

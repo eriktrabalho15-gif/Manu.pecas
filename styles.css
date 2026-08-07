@@ -579,6 +579,13 @@ body[data-view="app"] .login-screen {
   align-items: center;
 }
 
+.items-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  justify-content: flex-end;
+}
+
 .items-header p {
   margin-bottom: 0;
   color: var(--muted);
@@ -637,6 +644,14 @@ body[data-view="app"] .login-screen {
 
 .suggestions strong {
   color: var(--green-dark);
+}
+
+.suggestions .suggest-registration {
+  background: var(--amber-soft);
+}
+
+.suggestions .suggest-registration strong {
+  color: var(--amber);
 }
 
 .primary-action,
@@ -1043,6 +1058,16 @@ body[data-view="app"] .login-screen {
   overflow: hidden;
 }
 
+.part-registration-admin {
+  margin-top: 18px;
+  border-top: 1px solid var(--line);
+}
+
+.compact-header {
+  padding-top: 18px;
+  padding-bottom: 16px;
+}
+
 .admin-form {
   display: grid;
   grid-template-columns: minmax(180px, 1fr) minmax(220px, 1.2fr) 180px 160px auto;
@@ -1058,9 +1083,9 @@ body[data-view="app"] .login-screen {
   padding: 16px;
 }
 
-.user-row {
+.user-row,
+.part-registration-row {
   display: grid;
-  grid-template-columns: minmax(220px, 1fr) 150px minmax(150px, 180px) 110px 240px;
   gap: 12px;
   align-items: center;
   border: 1px solid var(--line);
@@ -1069,7 +1094,27 @@ body[data-view="app"] .login-screen {
   padding: 12px;
 }
 
+.user-row {
+  grid-template-columns: minmax(220px, 1fr) 150px minmax(150px, 180px) 110px 240px;
+}
+
+.part-registration-list {
+  display: grid;
+  gap: 8px;
+  padding: 16px;
+}
+
+.part-registration-row {
+  grid-template-columns: minmax(0, 1.6fr) minmax(180px, 0.65fr) 120px 240px;
+}
+
+.part-registration-row.done {
+  background: var(--green-soft);
+}
+
 .user-row div,
+.part-registration-row div,
+.part-registration-row label,
 .user-password-field,
 .user-role-field {
   display: grid;
@@ -1077,12 +1122,15 @@ body[data-view="app"] .login-screen {
 }
 
 .user-row span,
-.user-row small {
+.user-row small,
+.part-registration-row span,
+.part-registration-row small {
   color: var(--muted);
 }
 
 .user-password-field input,
-.user-role-field select {
+.user-role-field select,
+.created-part-code {
   min-height: 38px;
   padding: 8px 10px;
 }
@@ -1846,6 +1894,7 @@ body[data-role="admin"] .request-card {
   .purchase-overview-row,
   .admin-form,
   .user-row,
+  .part-registration-row,
   .history-meta,
   .history-date-filters {
     grid-template-columns: 1fr;
@@ -1982,6 +2031,14 @@ body[data-role="admin"] .request-card {
 
   .filters {
     justify-content: flex-start;
+  }
+
+  .items-actions {
+    justify-content: stretch;
+  }
+
+  .items-actions .secondary-action {
+    flex: 1 1 150px;
   }
 
   .filter-button {

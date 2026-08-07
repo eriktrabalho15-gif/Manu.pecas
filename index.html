@@ -4,7 +4,7 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>ManuPeças | JTP Transportes</title>
-    <link rel="stylesheet" href="./styles.css?v=20260807-abas-fila" />
+    <link rel="stylesheet" href="./styles.css?v=20260807-cadastro-peca" />
   </head>
   <body data-view="login">
     <section class="login-screen" id="login-screen">
@@ -108,7 +108,10 @@
                 <h3>Peças solicitadas</h3>
                 <p>Busque pelo código ou pela descrição da peça.</p>
               </div>
-              <button class="secondary-action compact" id="add-item-button" type="button">Adicionar peça</button>
+              <div class="items-actions">
+                <button class="secondary-action compact" id="request-part-registration-button" type="button">Solicitar cadastro</button>
+                <button class="secondary-action compact" id="add-item-button" type="button">Adicionar peça</button>
+              </div>
             </div>
             <div class="item-lines" id="item-lines"></div>
           </div>
@@ -286,6 +289,17 @@
           </form>
 
           <div class="user-list" id="user-list"></div>
+
+          <section class="part-registration-admin">
+            <div class="queue-header compact-header">
+              <div>
+                <p class="eyebrow">Admin</p>
+                <h2>Cadastro de peças</h2>
+                <p>Solicitações de itens não encontrados no catálogo. Erik e Bruno informam o código criado no SAP.</p>
+              </div>
+            </div>
+            <div class="part-registration-list" id="part-registration-list"></div>
+          </section>
         </section>
       </section>
     </main>
@@ -313,6 +327,28 @@
         </div>
         <p class="password-message" id="password-message"></p>
         <button class="primary-action" type="submit">Salvar nova senha</button>
+      </form>
+    </dialog>
+
+    <dialog class="password-dialog" id="part-registration-dialog">
+      <form class="dialog-shell password-form" id="part-registration-form" method="dialog">
+        <div class="dialog-header">
+          <div>
+            <p class="eyebrow">Peça sem cadastro</p>
+            <h2>Solicitar cadastro</h2>
+          </div>
+          <button class="icon-action" type="button" id="part-registration-close" aria-label="Fechar">x</button>
+        </div>
+        <div class="field">
+          <label for="part-registration-description">Descrição do item</label>
+          <textarea id="part-registration-description" name="description" required rows="3" placeholder="Descreva o item exatamente como precisa ser cadastrado."></textarea>
+        </div>
+        <div class="field">
+          <label for="part-registration-original-code">Código original</label>
+          <input id="part-registration-original-code" name="originalCode" required placeholder="Ex.: código da peça, fabricante ou referência" />
+        </div>
+        <p class="password-message" id="part-registration-message"></p>
+        <button class="primary-action" type="submit">Enviar para cadastro</button>
       </form>
     </dialog>
 
@@ -441,6 +477,16 @@
     <script src="./parts-data.js"></script>
     <script src="./wms-data.js"></script>
     <script src="./cd-wms-data.js"></script>
-    <script src="./app.js?v=20260807-abas-fila"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+    <script>
+      const SUPABASE_URL = "https://lxlhubvvxygpgvoxbjju.supabase.co";
+      const SUPABASE_PUBLIC_KEY = "sb_publishable_6BQ6oOI99nUKfGKX2JVO_g_68WCFfXU";
+
+      window.manuPecasSupabase = window.supabase.createClient(
+        SUPABASE_URL,
+        SUPABASE_PUBLIC_KEY
+      );
+    </script>
+    <script src="./app.js?v=20260807-supabase-sync"></script>
   </body>
 </html>
