@@ -1,0 +1,446 @@
+<!doctype html>
+<html lang="pt-BR">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>ManuPeças | JTP Transportes</title>
+    <link rel="stylesheet" href="./styles.css?v=20260807-assunto-email" />
+  </head>
+  <body data-view="login">
+    <section class="login-screen" id="login-screen">
+      <div class="login-orb orb-one"></div>
+      <div class="login-orb orb-two"></div>
+      <img class="login-logo" src="./logo-jtp.png" alt="JTP Transportes" />
+      <h1>ManuPeças</h1>
+      <p class="tool-owner">Ferramenta da JTP Transportes</p>
+      <p class="login-subtitle">Entre na sua conta</p>
+
+      <form class="login-card" id="login-form">
+        <label for="email">Usuário</label>
+        <div class="input-shell">
+          <span>@</span>
+          <input id="email" name="email" required type="text" autocomplete="username" placeholder="nome.sobrenome" />
+        </div>
+
+        <label for="password">Senha</label>
+        <div class="input-shell">
+          <span>•</span>
+          <input id="password" name="password" required type="password" autocomplete="current-password" placeholder="Sua senha" />
+        </div>
+
+        <div class="login-row">
+          <label class="checkbox-label">
+            <input type="checkbox" name="remember" />
+            Manter-se conectado
+          </label>
+          <button type="button" class="link-button">Esqueci minha senha</button>
+        </div>
+
+        <button class="primary-action blue-action" type="submit">Entrar</button>
+      </form>
+    </section>
+
+    <main class="app-shell" id="app-shell">
+      <header class="topbar">
+        <div class="brand-cluster">
+          <div>
+            <p class="eyebrow">JTP Transportes</p>
+            <h1>ManuPeças</h1>
+            <p class="user-greeting" id="user-greeting"></p>
+          </div>
+        </div>
+        <div class="session-box">
+          <span id="session-label"></span>
+          <div class="notification-wrap">
+            <button class="notification-button" type="button" id="notification-button" aria-label="Notificações" aria-expanded="false">
+              <span class="notification-icon">!</span>
+              <strong id="notification-count">0</strong>
+            </button>
+            <div class="notification-popover" id="notification-popover" hidden>
+              <div class="notification-head">
+                <strong>Notificações</strong>
+                <button type="button" id="notification-mark-all">Marcar lidas</button>
+              </div>
+              <div class="notification-list" id="notification-list"></div>
+            </div>
+          </div>
+          <button class="theme-toggle" type="button" id="theme-toggle" aria-label="Alternar tema">Tema escuro</button>
+          <button class="secondary-action" type="button" id="change-password-button">Trocar Senha</button>
+          <button class="secondary-action" type="button" id="logout-button">Sair</button>
+        </div>
+      </header>
+
+      <nav class="app-tabs" aria-label="Navegação principal">
+        <button class="tab-button active" type="button" data-page="request">Pedido</button>
+        <button class="tab-button" type="button" data-page="pending">Solicitações</button>
+        <button class="tab-button history-tab" type="button" data-page="history">Histórico</button>
+        <button class="tab-button approval-tab" type="button" data-page="approval">Aprovação de compra</button>
+        <button class="tab-button purchase-tab" type="button" data-page="purchase">Compra</button>
+        <button class="tab-button admin-tab" type="button" data-page="admin">Controle de Acesso</button>
+      </nav>
+
+      <section class="page page-request active" id="page-request">
+        <form class="request-form" id="request-form">
+          <div class="page-heading">
+            <p class="eyebrow">PCM</p>
+            <h2>Abrir solicitação</h2>
+            <p>Informe o prefixo, inclua uma ou mais peças e registre o motivo da manutenção.</p>
+          </div>
+
+          <div class="form-grid">
+            <div class="field">
+              <label for="bus">Prefixo</label>
+              <input id="bus" required name="bus" placeholder="Ex.: 1248" inputmode="numeric" />
+            </div>
+            <div class="field">
+              <label for="priority">Prioridade</label>
+              <select id="priority" name="priority">
+                <option>Normal</option>
+                <option>Alta</option>
+                <option>Emergencial</option>
+              </select>
+            </div>
+          </div>
+
+          <div class="items-section">
+            <div class="items-header">
+              <div>
+                <h3>Peças solicitadas</h3>
+                <p>Busque pelo código ou pela descrição da peça.</p>
+              </div>
+              <button class="secondary-action compact" id="add-item-button" type="button">Adicionar peça</button>
+            </div>
+            <div class="item-lines" id="item-lines"></div>
+          </div>
+
+          <div class="field">
+            <label for="reason">Motivo da solicitação</label>
+            <textarea id="reason" required name="reason" rows="4" placeholder="Descreva a manutenção, OS, sintoma ou troca preventiva."></textarea>
+          </div>
+
+          <button class="primary-action" type="submit">Registrar solicitação</button>
+        </form>
+      </section>
+
+      <section class="page page-pending" id="page-pending">
+        <section class="metrics" aria-label="Indicadores do processo">
+          <article class="metric">
+            <span class="metric-value" id="metric-open">0</span>
+            <span class="metric-label">Solicitação</span>
+          </article>
+          <article class="metric">
+            <span class="metric-value" id="metric-stock">0</span>
+            <span class="metric-label">Atendimento</span>
+          </article>
+          <article class="metric">
+            <span class="metric-value" id="metric-buy">0</span>
+            <span class="metric-label">Para compra</span>
+          </article>
+          <article class="metric">
+            <span class="metric-value" id="metric-done">0</span>
+            <span class="metric-label">Pedidos SAP</span>
+          </article>
+        </section>
+
+        <section class="queue-panel">
+          <div class="queue-header">
+            <div>
+              <p class="eyebrow" id="queue-eyebrow">Acompanhamento</p>
+              <h2 id="queue-title">Pendências</h2>
+              <p id="queue-subtitle">Veja o andamento das solicitações registradas.</p>
+            </div>
+            <div class="filters" aria-label="Filtrar solicitações">
+              <button class="filter-button active" type="button" data-filter="solicitacao">Atendimento Almox.</button>
+              <button class="filter-button" type="button" data-filter="cd">Atendimento CD</button>
+              <button class="filter-button" type="button" data-filter="recebimento">Recebimento</button>
+              <button class="filter-button" type="button" data-filter="atendimento">Retirada PCM</button>
+              <button class="filter-button" type="button" data-filter="compra">Compra</button>
+            </div>
+          </div>
+
+          <div class="manager-dashboard" id="manager-dashboard">
+            <article class="executive-panel">
+              <span>Itens em solicitação</span>
+              <strong id="manager-pending-items">0</strong>
+            </article>
+            <article class="executive-panel">
+              <span>Itens para compra</span>
+              <strong id="manager-buy-items">0</strong>
+            </article>
+            <article class="executive-panel">
+              <span>Retiradas liberadas</span>
+              <strong id="manager-service-rate">0%</strong>
+            </article>
+          </div>
+
+          <div class="request-list" id="request-list" aria-live="polite"></div>
+        </section>
+      </section>
+
+      <section class="page page-history" id="page-history">
+        <section class="history-panel">
+          <div class="queue-header">
+            <div>
+              <p class="eyebrow">Gerente</p>
+              <h2>Histórico de solicitações</h2>
+              <p>Consulte o andamento, responsáveis e SLA médio por etapa.</p>
+            </div>
+            <div class="field history-search">
+              <label for="history-filter">Filtrar por peça</label>
+              <input id="history-filter" placeholder="Código ou descrição" />
+            </div>
+            <div class="history-date-filters" aria-label="Filtrar por data dos atendimentos">
+              <div class="field">
+                <label for="history-date-from">De</label>
+                <input id="history-date-from" type="date" />
+              </div>
+              <div class="field">
+                <label for="history-date-to">Até</label>
+                <input id="history-date-to" type="date" />
+              </div>
+            </div>
+          </div>
+
+          <div class="history-sla">
+            <article class="executive-panel">
+              <span>SLA médio solicitação</span>
+              <strong id="sla-request">0min</strong>
+            </article>
+            <article class="executive-panel">
+              <span>SLA médio atendimento</span>
+              <strong id="sla-service">0min</strong>
+            </article>
+            <article class="executive-panel">
+              <span>SLA médio compra</span>
+              <strong id="sla-buy">0min</strong>
+            </article>
+          </div>
+
+          <div class="history-list" id="history-list"></div>
+        </section>
+      </section>
+
+      <section class="page page-approval" id="page-approval">
+        <section class="purchase-page-panel">
+          <div class="queue-header">
+            <div>
+              <p class="eyebrow">Gerente</p>
+              <h2>Aprovação de compra</h2>
+              <p>Analise os itens que Almoxarifado e CD não atenderam antes de liberar o processo SAP.</p>
+            </div>
+          </div>
+
+          <div class="purchase-overview-list" id="approval-list"></div>
+        </section>
+      </section>
+
+      <section class="page page-purchase" id="page-purchase">
+        <section class="purchase-page-panel">
+          <div class="queue-header">
+            <div>
+              <p class="eyebrow">Gerente</p>
+              <h2>Pendência de compras</h2>
+              <p>Acompanhe itens em compra, pedido SAP, previsão de entrega e SLA.</p>
+            </div>
+          </div>
+
+          <div class="purchase-overview-list" id="purchase-overview-list"></div>
+        </section>
+      </section>
+
+      <section class="page page-admin" id="page-admin">
+        <section class="admin-panel">
+          <div class="queue-header">
+            <div>
+              <p class="eyebrow">Admin</p>
+              <h2>Controle de acessos</h2>
+              <p>Cadastre usuários e defina o perfil de acesso no ManuPeças.</p>
+            </div>
+          </div>
+
+          <form class="admin-form" id="user-form">
+            <div class="field">
+              <label for="user-name">Nome</label>
+              <input id="user-name" name="name" required placeholder="Ex.: João Silva" />
+            </div>
+            <div class="field">
+              <label for="user-email">Usuário</label>
+              <input id="user-email" name="email" required type="text" autocomplete="off" placeholder="nome.sobrenome" />
+            </div>
+            <div class="field">
+              <label for="user-role">Perfil</label>
+              <select id="user-role" name="role" required>
+                <option value="pcm">PCM</option>
+                <option value="almox">Almoxarife</option>
+                <option value="cd">CD</option>
+                <option value="compras">Compras</option>
+                <option value="manager">Gerente</option>
+                <option value="admin">Admin</option>
+              </select>
+            </div>
+            <div class="field">
+              <label for="user-password">Senha</label>
+              <input id="user-password" name="password" required type="password" value="1234" />
+            </div>
+            <button class="primary-action" type="submit">Criar acesso</button>
+          </form>
+
+          <div class="user-list" id="user-list"></div>
+        </section>
+      </section>
+    </main>
+
+    <dialog class="password-dialog" id="password-dialog">
+      <form class="dialog-shell password-form" id="password-form" method="dialog">
+        <div class="dialog-header">
+          <div>
+            <p class="eyebrow">Conta</p>
+            <h2>Alterar senha</h2>
+          </div>
+          <button class="icon-action" type="button" id="password-close" aria-label="Fechar">x</button>
+        </div>
+        <div class="field">
+          <label for="current-password">Senha atual</label>
+          <input id="current-password" name="currentPassword" required type="password" autocomplete="current-password" />
+        </div>
+        <div class="field">
+          <label for="new-password">Nova senha</label>
+          <input id="new-password" name="newPassword" required type="password" autocomplete="new-password" />
+        </div>
+        <div class="field">
+          <label for="confirm-password">Confirmar nova senha</label>
+          <input id="confirm-password" name="confirmPassword" required type="password" autocomplete="new-password" />
+        </div>
+        <p class="password-message" id="password-message"></p>
+        <button class="primary-action" type="submit">Salvar nova senha</button>
+      </form>
+    </dialog>
+
+    <template id="item-line-template">
+      <div class="item-line">
+        <div class="field item-field">
+          <label>Peça</label>
+          <div class="part-search">
+            <input required name="partLookup" autocomplete="off" placeholder="Digite código ou descrição" />
+            <div class="suggestions" role="listbox"></div>
+          </div>
+        </div>
+        <div class="field qty-field">
+          <label>Qtd.</label>
+          <input required name="partQuantity" type="number" min="1" value="1" />
+        </div>
+        <button class="icon-action remove-item" type="button" aria-label="Remover peça">x</button>
+      </div>
+    </template>
+
+    <template id="request-card-template">
+      <article class="request-card">
+        <button class="request-summary" type="button">
+          <div class="status-row">
+            <span class="status-pill"></span>
+            <span class="request-code"></span>
+          </div>
+          <div class="summary-line">
+            <h3></h3>
+            <span class="sla-pill"></span>
+          </div>
+          <div class="summary-meta">
+            <span class="bus-summary"></span>
+            <span class="items-summary"></span>
+            <span class="priority-summary"></span>
+          </div>
+        </button>
+        <div class="request-details">
+          <div class="process-map"></div>
+          <div class="card-main">
+            <dl class="details-grid">
+            <div>
+              <dt>Prefixo</dt>
+              <dd class="bus"></dd>
+            </div>
+            <div>
+              <dt>Itens</dt>
+              <dd class="quantity"></dd>
+            </div>
+            <div>
+              <dt>Prioridade</dt>
+              <dd class="priority"></dd>
+            </div>
+            <div>
+              <dt>Abertura</dt>
+              <dd class="created"></dd>
+            </div>
+            <div>
+              <dt>Requisitante</dt>
+              <dd class="requester"></dd>
+            </div>
+            <div>
+              <dt>Almoxarife</dt>
+              <dd class="warehouse-user"></dd>
+            </div>
+          </dl>
+          <ul class="parts-list"></ul>
+          <p class="reason"></p>
+          <p class="response"></p>
+        </div>
+        <div class="almox-actions">
+          <div class="fulfillment-panel">
+            <div class="fulfillment-list"></div>
+            <label>
+            Observação do Almoxarifado
+              <textarea rows="3" placeholder="Ex.: reservado no box 3, separar no balcão, item zerado..."></textarea>
+            </label>
+            <div class="field response-email-field" hidden>
+            <label>E-mail de retorno</label>
+              <input class="response-email" type="email" value="" />
+            </div>
+            <div class="field transfer-invoice-field">
+              <label>NF de transferência</label>
+              <input class="transfer-invoice" type="file" accept=".pdf,.jpg,.jpeg,.png,.xml" />
+              <small class="invoice-name"></small>
+            </div>
+            <div class="action-grid">
+              <button class="action available save-fulfillment" type="button"><span>1</span> Salvar atendimento</button>
+              <button class="action email-response" type="button"><span>2</span> Enviar e-mail</button>
+              <button class="action reset" type="button">Reabrir</button>
+            </div>
+          </div>
+          <div class="purchase-workflow">
+            <div class="purchase-title">Compra SAP</div>
+            <div class="purchase-items"></div>
+            <div class="field">
+              <label>Número do pedido de compra</label>
+              <input class="purchase-order" placeholder="Ex.: 4500123456" />
+            </div>
+            <div class="field">
+              <label>Previsão de entrega</label>
+              <input class="delivery-date" type="date" />
+            </div>
+            <button class="action purchase-save" type="button">Salvar pedido SAP</button>
+            <button class="action purchase-email" type="button">Enviar e-mail de compra</button>
+            <div class="field purchase-arrival-field">
+              <label>Data de chegada</label>
+              <input class="arrival-date" type="date" />
+            </div>
+            <div class="field receipt-number-field">
+              <label>Número de recebimento / entrada SAP</label>
+              <input class="receipt-number" placeholder="Ex.: 5000123456" />
+            </div>
+            <div class="field receipt-password-field">
+              <label>Senha do almoxarife</label>
+              <input class="receipt-password" type="password" autocomplete="current-password" placeholder="Confirme sua senha" />
+              <small class="receipt-message"></small>
+            </div>
+            <button class="action available purchase-arrival" type="button">Confirmar recebimento e entrada SAP</button>
+          </div>
+        </div>
+        </div>
+      </article>
+    </template>
+
+    <script src="./parts-data.js"></script>
+    <script src="./wms-data.js"></script>
+    <script src="./cd-wms-data.js"></script>
+    <script src="./app.js?v=20260807-assunto-email"></script>
+  </body>
+</html>
