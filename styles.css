@@ -1874,7 +1874,7 @@ body[data-role="admin"] .request-card {
 @media (max-width: 620px) {
   .app-shell,
   .login-screen {
-    padding: 12px;
+    padding: 14px;
   }
 
   .login-card {
@@ -1890,9 +1890,174 @@ body[data-role="admin"] .request-card {
     font-size: 2.2rem;
   }
 
+  .topbar {
+    gap: 18px;
+    padding: 8px 0 14px;
+  }
+
+  .brand-cluster {
+    width: 100%;
+  }
+
+  .brand-cluster h1 {
+    font-size: 2.45rem;
+    line-height: 0.98;
+  }
+
+  .eyebrow {
+    margin-bottom: 4px;
+  }
+
+  .user-greeting {
+    margin-top: 8px;
+  }
+
+  .session-box {
+    display: grid;
+    width: 100%;
+    grid-template-columns: minmax(0, 1fr) auto;
+    gap: 10px;
+  }
+
+  #session-label {
+    grid-column: 1 / -1;
+    min-width: 0;
+    overflow-wrap: anywhere;
+  }
+
+  .notification-wrap {
+    justify-self: start;
+  }
+
+  .notification-popover {
+    position: fixed;
+    top: 92px;
+    right: 14px;
+    left: 14px;
+    width: auto;
+    max-height: calc(100vh - 130px);
+  }
+
+  .notification-list {
+    max-height: calc(100vh - 205px);
+  }
+
+  .theme-toggle,
+  .topbar .secondary-action {
+    min-height: 44px;
+    padding: 0 12px;
+    white-space: nowrap;
+  }
+
+  #change-password-button {
+    grid-column: 1 / 2;
+  }
+
+  #logout-button {
+    grid-column: 2 / 3;
+    min-width: 72px;
+  }
+
   .filters,
   .app-tabs {
     overflow-x: auto;
+    max-width: 100%;
+    -webkit-overflow-scrolling: touch;
+    scrollbar-width: thin;
+  }
+
+  .app-tabs {
+    gap: 18px;
+    margin: 4px 0 16px;
+    padding: 0 2px;
+  }
+
+  .tab-button {
+    flex: 0 0 auto;
+    min-height: 48px;
+    padding: 0 2px;
+    text-align: center;
+    white-space: normal;
+  }
+
+  .filters {
+    justify-content: flex-start;
+  }
+
+  .filter-button {
+    flex: 0 0 auto;
+    min-width: max-content;
+    padding: 0 12px;
+    white-space: nowrap;
+  }
+
+  .request-form,
+  .queue-panel,
+  .history-panel,
+  .purchase-page-panel,
+  .admin-panel {
+    border-radius: 8px;
+  }
+
+  .queue-header {
+    padding: 18px;
+  }
+
+  .queue-header h2,
+  .page-heading h2 {
+    font-size: 1.75rem;
+    line-height: 1.05;
+  }
+
+  .queue-header p,
+  .page-heading p {
+    font-size: 0.96rem;
+  }
+
+  .request-list {
+    padding: 12px;
+  }
+
+  .request-card,
+  .request-summary,
+  .request-details,
+  .parts-list,
+  .parts-list li,
+  .history-card,
+  .purchase-overview-row,
+  .approval-item {
+    min-width: 0;
+  }
+
+  .request-summary {
+    padding: 14px;
+  }
+
+  .summary-line,
+  .status-row {
+    align-items: flex-start;
+    flex-direction: column;
+  }
+
+  .summary-line h3 {
+    font-size: 0.98rem;
+    line-height: 1.35;
+  }
+
+  .summary-meta {
+    gap: 6px;
+  }
+
+  .process-map {
+    grid-template-columns: 1fr;
+  }
+
+  .process-step {
+    min-width: 0;
+  }
+
+  .request-details {
+    padding: 12px;
   }
 
   .metrics,
@@ -1903,6 +2068,53 @@ body[data-role="admin"] .request-card {
   .parts-list li,
   .suggestions button {
     grid-template-columns: 1fr;
+  }
+
+  .parts-list li {
+    gap: 8px;
+    padding: 10px;
+  }
+
+  .parts-list span,
+  .history-item-row,
+  .purchase-overview-row,
+  .approval-item {
+    overflow-wrap: anywhere;
+  }
+
+  .qty-stack {
+    grid-template-columns: auto 1fr;
+    justify-items: start;
+    min-height: 42px;
+    text-align: left;
+  }
+
+  .qty-stack b {
+    min-width: 28px;
+    text-align: center;
+  }
+
+  .fulfillment-row {
+    grid-template-columns: 1fr;
+  }
+
+  .action-grid {
+    gap: 8px;
+  }
+
+  .empty-state {
+    min-height: 170px;
+    padding: 24px 18px;
+  }
+
+  .history-card,
+  .purchase-overview-row,
+  .approval-item {
+    overflow: hidden;
+  }
+
+  .history-item-row {
+    gap: 7px;
   }
 
   .metric {
