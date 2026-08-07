@@ -1,43 +1,53 @@
-<!doctype html>
+﻿<!doctype html>
 <html lang="pt-BR">
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>ManuPeças | JTP Transportes</title>
-    <link rel="stylesheet" href="./styles.css?v=20260807-cadastro-peca" />
+    <link rel="icon" href="./favicon.ico" sizes="any" />
+    <link rel="apple-touch-icon" href="./favicon.png" />
+    <link rel="stylesheet" href="./styles.css?v=20260807-login-limpo" />
   </head>
   <body data-view="login">
     <section class="login-screen" id="login-screen">
-      <div class="login-orb orb-one"></div>
-      <div class="login-orb orb-two"></div>
-      <img class="login-logo" src="./logo-jtp.png" alt="JTP Transportes" />
-      <h1>ManuPeças</h1>
-      <p class="tool-owner">Ferramenta da JTP Transportes</p>
-      <p class="login-subtitle">Entre na sua conta</p>
-
-      <form class="login-card" id="login-form">
-        <label for="email">Usuário</label>
-        <div class="input-shell">
-          <span>@</span>
-          <input id="email" name="email" required type="text" autocomplete="username" placeholder="nome.sobrenome" />
+      <aside class="login-visual" aria-hidden="true">
+        <div class="login-brand-row">
+          <img class="login-logo" src="./logo-jtp.png" alt="" />
+          <div>
+            <span>JTP Transportes</span>
+            <strong>ManuPeças</strong>
+          </div>
         </div>
+      </aside>
 
-        <label for="password">Senha</label>
-        <div class="input-shell">
-          <span>•</span>
-          <input id="password" name="password" required type="password" autocomplete="current-password" placeholder="Sua senha" />
-        </div>
+      <div class="login-panel">
+        <p class="eyebrow">Ferramenta da JTP Transportes</p>
+        <h1>ManuPeças</h1>
+        <p class="login-subtitle">Entre na sua conta</p>
 
-        <div class="login-row">
-          <label class="checkbox-label">
-            <input type="checkbox" name="remember" />
-            Manter-se conectado
-          </label>
-          <button type="button" class="link-button">Esqueci minha senha</button>
-        </div>
+        <form class="login-card" id="login-form">
+          <label for="email">Usuário</label>
+          <div class="input-shell">
+            <span>@</span>
+            <input id="email" name="email" required type="text" autocomplete="username" placeholder="nome.sobrenome" />
+          </div>
 
-        <button class="primary-action blue-action" type="submit">Entrar</button>
-      </form>
+          <label for="password">Senha</label>
+          <div class="input-shell">
+            <span>•</span>
+            <input id="password" name="password" required type="password" autocomplete="current-password" placeholder="Sua senha" />
+          </div>
+
+          <div class="login-row">
+            <label class="checkbox-label">
+              <input type="checkbox" name="remember" />
+              Manter-se conectado
+            </label>
+          </div>
+
+          <button class="primary-action blue-action" type="submit">Entrar</button>
+        </form>
+      </div>
     </section>
 
     <main class="app-shell" id="app-shell">
@@ -76,6 +86,7 @@
         <button class="tab-button history-tab" type="button" data-page="history">Histórico</button>
         <button class="tab-button approval-tab" type="button" data-page="approval">Aprovação de compra</button>
         <button class="tab-button purchase-tab" type="button" data-page="purchase">Compra</button>
+        <button class="tab-button part-admin-tab" type="button" data-page="part-admin">Cadastro de Item</button>
         <button class="tab-button admin-tab" type="button" data-page="admin">Controle de Acesso</button>
       </nav>
 
@@ -84,7 +95,7 @@
           <div class="page-heading">
             <p class="eyebrow">PCM</p>
             <h2>Abrir solicitação</h2>
-            <p>Informe o prefixo, inclua uma ou mais peças e registre o motivo da manutenção.</p>
+            <p>Informe prefixo, peças e motivo.</p>
           </div>
 
           <div class="form-grid">
@@ -106,7 +117,7 @@
             <div class="items-header">
               <div>
                 <h3>Peças solicitadas</h3>
-                <p>Busque pelo código ou pela descrição da peça.</p>
+                <p>Busque ou solicite cadastro.</p>
               </div>
               <div class="items-actions">
                 <button class="secondary-action compact" id="request-part-registration-button" type="button">Solicitar cadastro</button>
@@ -150,7 +161,7 @@
             <div>
               <p class="eyebrow" id="queue-eyebrow">Acompanhamento</p>
               <h2 id="queue-title">Pendências</h2>
-              <p id="queue-subtitle">Veja o andamento das solicitações registradas.</p>
+              <p id="queue-subtitle">Acompanhe o fluxo em aberto.</p>
             </div>
             <div class="filters" aria-label="Filtrar solicitações">
               <button class="filter-button active" type="button" data-filter="solicitacao">ALMOXARIFADO</button>
@@ -186,7 +197,7 @@
             <div>
               <p class="eyebrow">Gerente</p>
               <h2>Histórico de solicitações</h2>
-              <p>Consulte o andamento, responsáveis e SLA médio por etapa.</p>
+              <p>Andamento, responsáveis e SLA.</p>
             </div>
             <div class="field history-search">
               <label for="history-filter">Filtrar por peça</label>
@@ -229,7 +240,7 @@
             <div>
               <p class="eyebrow">Gerente</p>
               <h2>Aprovação de compra</h2>
-              <p>Analise os itens que Almoxarifado e CD não atenderam antes de liberar o processo SAP.</p>
+              <p>Libere ou recuse itens para compra.</p>
             </div>
           </div>
 
@@ -243,7 +254,7 @@
             <div>
               <p class="eyebrow">Gerente</p>
               <h2>Pendência de compras</h2>
-              <p>Acompanhe itens em compra, pedido SAP, previsão de entrega e SLA.</p>
+              <p>Itens, pedido SAP, chegada e SLA.</p>
             </div>
           </div>
 
@@ -257,7 +268,7 @@
             <div>
               <p class="eyebrow">Admin</p>
               <h2>Controle de acessos</h2>
-              <p>Cadastre usuários e defina o perfil de acesso no ManuPeças.</p>
+              <p>Usuários, perfis e senhas.</p>
             </div>
           </div>
 
@@ -269,6 +280,10 @@
             <div class="field">
               <label for="user-email">Usuário</label>
               <input id="user-email" name="email" required type="text" autocomplete="off" placeholder="nome.sobrenome" />
+            </div>
+            <div class="field">
+              <label for="user-corporate-email">E-mail corporativo</label>
+              <input id="user-corporate-email" name="corporateEmail" type="email" autocomplete="off" placeholder="nome.sobrenome@jtptransportes.com.br" />
             </div>
             <div class="field">
               <label for="user-role">Perfil</label>
@@ -290,16 +305,20 @@
 
           <div class="user-list" id="user-list"></div>
 
-          <section class="part-registration-admin">
-            <div class="queue-header compact-header">
-              <div>
-                <p class="eyebrow">Admin</p>
-                <h2>Cadastro de peças</h2>
-                <p>Solicitações de itens não encontrados no catálogo. Erik e Bruno informam o código criado no SAP.</p>
-              </div>
+        </section>
+      </section>
+
+      <section class="page page-part-admin" id="page-part-admin">
+        <section class="purchase-page-panel">
+          <div class="queue-header">
+            <div>
+              <p class="eyebrow">Admin</p>
+              <h2>Cadastro de item</h2>
+              <p>Analise, vincule ou cadastre no SAP.</p>
             </div>
-            <div class="part-registration-list" id="part-registration-list"></div>
-          </section>
+          </div>
+
+          <div class="part-registration-list" id="part-registration-list"></div>
         </section>
       </section>
     </main>
@@ -341,7 +360,7 @@
         </div>
         <div class="field">
           <label for="part-registration-description">Descrição do item</label>
-          <textarea id="part-registration-description" name="description" required rows="3" placeholder="Descreva o item exatamente como precisa ser cadastrado."></textarea>
+          <textarea id="part-registration-description" name="description" required rows="3" placeholder="Descrição enviada pelo PCM."></textarea>
         </div>
         <div class="field">
           <label for="part-registration-original-code">Código original</label>
@@ -487,6 +506,8 @@
         SUPABASE_PUBLIC_KEY
       );
     </script>
-    <script src="./app.js?v=20260807-supabase-sync"></script>
+    <script src="./app.js?v=20260807-publicacao-github"></script>
   </body>
 </html>
+
+

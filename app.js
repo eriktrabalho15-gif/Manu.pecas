@@ -1,4 +1,4 @@
-const REQUESTS_KEY = "pecas-transporte-solicitacoes-v4";
+﻿const REQUESTS_KEY = "pecas-transporte-solicitacoes-v4";
 const SESSION_KEY = "pecas-transporte-sessao";
 const THEME_KEY = "pecas-transporte-tema";
 const USERS_KEY = "pecas-transporte-usuarios";
@@ -13,18 +13,19 @@ const wmsLocations = globalThis.WMS_LOCATIONS && typeof globalThis.WMS_LOCATIONS
 const cdWmsLocations = globalThis.CD_WMS_LOCATIONS && typeof globalThis.CD_WMS_LOCATIONS === "object" ? globalThis.CD_WMS_LOCATIONS : {};
 
 const accounts = {
-  "erik.lima": { password: "1234", role: "admin", label: "Admin", name: "ERIK.LIMA" },
-  "bruno.medici": { password: "1234", role: "admin", label: "Admin", name: "BRUNO.MEDICI" },
-  "caio.silveira": { password: "1234", role: "admin", label: "Admin", name: "CAIO.SILVEIRA" },
-  "rodrigo.silva": { password: "1234", role: "manager", label: "Gerente", name: "RODRIGO.SILVA" },
-  "carla.alves": { password: "1234", role: "cd", label: "CD", name: "CARLA.ALVES" },
-  "jessica.lopes": { password: "1234", role: "almox", label: "Almoxarifado", name: "JESSICA.LOPES" },
-  "marcio.ferreira": { password: "1234", role: "compras", label: "Compras", name: "MARCIO.FERREIRA" },
-  "matheus.campos": { password: "1234", role: "pcm", label: "PCM", name: "MATHEUS.CAMPOS" },
+  "erik.barreto": { password: "1234", role: "admin", label: "Admin", name: "ERIK.BARRETO", corporateEmail: "erik.barreto@jtptransportes.com.br" },
+  "bruno.medici": { password: "1234", role: "admin", label: "Admin", name: "BRUNO.MEDICI", corporateEmail: "bruno.medici@jtptransportes.com.br" },
+  "caio.silveira": { password: "1234", role: "admin", label: "Admin", name: "CAIO.SILVEIRA", corporateEmail: "caio.silveira@jtptransportes.com.br" },
+  "rodrigo.silva": { password: "1234", role: "manager", label: "Gerente", name: "RODRIGO.SILVA", corporateEmail: "rodrigo.silva@jtptransportes.com.br" },
+  "carla.alves": { password: "1234", role: "cd", label: "CD", name: "CARLA.ALVES", corporateEmail: "carla.alves@jtptransportes.com.br" },
+  "jessica.lopes": { password: "1234", role: "almox", label: "Almoxarifado", name: "JESSICA.LOPES", corporateEmail: "jessica.lopes@jtptransportes.com.br" },
+  "marcio.ferreira": { password: "1234", role: "compras", label: "Compras", name: "MARCIO.FERREIRA", corporateEmail: "marcio.ferreira@jtptransportes.com.br" },
+  "matheus.campos": { password: "1234", role: "pcm", label: "PCM", name: "MATHEUS.CAMPOS", corporateEmail: "matheus.campos@jtptransportes.com.br" },
 };
 
 const emailAliases = {
-  erik: "erik.lima",
+  erik: "erik.barreto",
+  "erik.lima": "erik.barreto",
   bruno: "bruno.medici",
   caio: "caio.silveira",
   rodrigo: "rodrigo.silva",
@@ -40,6 +41,7 @@ const statusText = {
   atendimento: "Retirada liberada para o PCM",
   aprovacao: "Aguardando aprovação de compra",
   compra: "Compra SAP pendente",
+  cadastro: "Aguardando cadastro da peça",
   recebimento: "Pendente entrada e recebimento pelo Almoxarifado",
   reprovado: "Compra não aprovada",
   retirado: "Item retirado pelo PCM",
@@ -55,6 +57,7 @@ let partRegistrations = loadPartRegistrations();
 let currentUser = loadSession();
 let currentFilter = "solicitacao";
 let currentPage = "request";
+let activePartRegistrationInput = null;
 
 const body = document.body;
 const loginForm = document.querySelector("#login-form");
@@ -110,7 +113,7 @@ applyTheme(localStorage.getItem(THEME_KEY) || "light");
 loginForm.addEventListener("submit", (event) => {
   event.preventDefault();
   const rawEmail = loginForm.elements.email.value.trim().toLowerCase();
-  const email = emailAliases[rawEmail] || rawEmail;
+  const email = normalizeLogin(rawEmail);
   const password = loginForm.elements.password.value;
   const account = getAllAccounts()[email];
 
@@ -119,7 +122,7 @@ loginForm.addEventListener("submit", (event) => {
     return;
   }
 
-  currentUser = { email, role: account.role, label: roleLabel(account.role), name: account.name };
+  currentUser = { email, role: account.role, label: roleLabel(account.role), name: account.name, corporateEmail: account.corporateEmail };
   if (loginForm.elements.remember.checked) {
     localStorage.setItem(SESSION_KEY, JSON.stringify(currentUser));
   } else {
@@ -158,7 +161,7 @@ notificationMarkAll.addEventListener("click", (event) => {
   event.stopPropagation();
   const ids = getUserNotifications().map((item) => item.id);
   saveReadNotifications(new Set([...getReadNotifications(), ...ids]));
-  notificationButton.classList.remove("has-unread");
+  updateNotificationBadge();
   renderNotifications();
 });
 
@@ -194,7 +197,7 @@ form.addEventListener("submit", (event) => {
     items,
     priority: data.get("priority"),
     reason: data.get("reason").trim(),
-    status: "solicitacao",
+    status: items.some(isPendingRegistrationItem) ? "cadastro" : "solicitacao",
     response: "",
     createdAt: new Date().toISOString(),
     requestedBy: currentUser.name || currentUser.label,
@@ -204,9 +207,13 @@ form.addEventListener("submit", (event) => {
   };
 
   requests = [request, ...requests];
+  linkPartRegistrationsToRequest(request);
   saveRequests();
 
   openEmailDraft(request, "");
+  if (request.status === "cadastro") {
+    openPartRegistrationEmailDraft(request);
+  }
 
   form.reset();
   resetItemLines();
@@ -221,6 +228,7 @@ addItemButton.addEventListener("click", () => addItemLine());
 requestPartRegistrationButton.addEventListener("click", () => openPartRegistrationDialog());
 
 partRegistrationClose.addEventListener("click", () => {
+  activePartRegistrationInput = null;
   partRegistrationDialog.close();
 });
 
@@ -251,6 +259,7 @@ userForm.addEventListener("submit", (event) => {
   const role = data.get("role");
   const user = {
     email,
+    corporateEmail: String(data.get("corporateEmail") || "").trim().toLowerCase() || defaultCorporateEmail(email),
     password: data.get("password").trim() || "1234",
     role,
     label: roleLabel(role),
@@ -276,7 +285,7 @@ userList.addEventListener("click", (event) => {
   if (!email) return;
 
   if (button.dataset.userAction === "save-password") {
-    updateUserAccess(email, row.querySelector(".user-password").value, row.querySelector(".user-role").value);
+    updateUserAccess(email, row.querySelector(".user-password").value, row.querySelector(".user-role").value, row.querySelector(".user-corporate-email").value);
   }
 
   if (button.dataset.userAction === "delete-user") {
@@ -292,8 +301,8 @@ partRegistrationList.addEventListener("click", (event) => {
   const id = row?.dataset.id;
   if (!id) return;
 
-  if (button.dataset.partAction === "save") {
-    completePartRegistration(id, row.querySelector(".created-part-code").value);
+  if (button.dataset.partAction === "save" || button.dataset.partAction === "existing") {
+    completePartRegistration(id, row.querySelector(".created-part-code").value, row.querySelector(".created-part-description").value, button.dataset.partAction === "existing");
   }
 
   if (button.dataset.partAction === "delete") {
@@ -350,6 +359,7 @@ function setPage(page) {
   if (page === "approval") renderApprovalQueue();
   if (page === "purchase") renderPurchaseOverview();
   if (page === "admin") renderUsers();
+  if (page === "part-admin") renderPartRegistrations();
 }
 
 function goToWorkQueue(filter) {
@@ -411,6 +421,20 @@ function getUserNotifications() {
     }
   });
 
+  const pendingPartRegistrations = partRegistrations.filter((item) => item.status !== "done");
+  if (currentUser.role === "admin" && pendingPartRegistrations.length > 0) {
+    const pendingIds = pendingPartRegistrations.map((item) => item.id).sort().join(",");
+    notifications.push({
+      id: `cadastro-item:${pendingIds}`,
+      requestId: "",
+      title: "Cadastro de item pendente",
+      description: `${pendingPartRegistrations.length} item(ns) aguardando código SAP`,
+      filter: "",
+      page: "part-admin",
+      items: pendingPartRegistrations.length,
+    });
+  }
+
   return notifications;
 }
 
@@ -426,24 +450,26 @@ function updateNotificationBadge() {
   const read = getReadNotifications();
   const notifications = getUserNotifications();
   const unread = notifications.filter((item) => !read.has(item.id));
-  const pendingItems = notifications.reduce((sum, item) => sum + item.items, 0);
-  notificationCount.textContent = pendingItems;
+  const unreadItems = unread.reduce((sum, item) => sum + item.items, 0);
+  notificationCount.textContent = unreadItems;
   notificationButton.classList.toggle("has-unread", unread.length > 0);
-  notificationButton.title = `${pendingItems} item(ns) pendente(s) para você`;
+  notificationButton.title = `${unreadItems} item(ns) não lido(s) para você`;
   if (!notificationPopover.hidden) renderNotifications();
 }
 
 function renderNotifications() {
   const read = getReadNotifications();
   const notifications = getUserNotifications();
-  if (notifications.length === 0) {
-    notificationList.innerHTML = '<div class="notification-empty">Nenhuma pendência para você.</div>';
+  const unreadNotifications = notifications.filter((item) => !read.has(item.id));
+  if (unreadNotifications.length === 0) {
+    notificationList.innerHTML = '<div class="notification-empty">Nenhuma notificação não lida.</div>';
     notificationCount.textContent = "0";
     notificationButton.classList.remove("has-unread");
     return;
   }
-  notificationList.innerHTML = notifications.map((item) => `
-    <button class="notification-item ${read.has(item.id) ? "read" : "unread"}" type="button" data-id="${item.id}" data-filter="${item.filter}" data-page="${item.page}">
+  notificationList.innerHTML = unreadNotifications.map((item) => `
+    <button class="notification-item unread" type="button" data-id="${item.id}" data-filter="${item.filter}" data-page="${item.page}">
+      <i class="notification-item-icon" aria-hidden="true">🔔</i>
       <strong>${item.title}</strong>
       <span>${item.description}</span>
     </button>
@@ -470,6 +496,10 @@ function navigateFromNotification(page, filter) {
   }
   if (page === "approval") {
     setPage("approval");
+    return;
+  }
+  if (page === "part-admin") {
+    setPage("part-admin");
     return;
   }
   goToWorkQueue(filter);
@@ -555,7 +585,7 @@ function normalizeRequest(request) {
 }
 
 function normalizeStatus(status, items = []) {
-  if (status === "solicitacao" || status === "cd" || status === "atendimento" || status === "aprovacao" || status === "compra" || status === "recebimento" || status === "reprovado" || status === "retirado") return status;
+  if (status === "solicitacao" || status === "cadastro" || status === "cd" || status === "atendimento" || status === "aprovacao" || status === "compra" || status === "recebimento" || status === "reprovado" || status === "retirado") return status;
   if (status === "pendente") return "solicitacao";
   if (status === "estoque" || status === "atendida") return "atendimento";
   if (status === "compra" || status === "parcial") return "compra";
@@ -564,19 +594,24 @@ function normalizeStatus(status, items = []) {
 
 function normalizeItem(item, requestStatus = "solicitacao") {
   const quantity = Number(item.quantity) || 1;
+  const pendingData = {
+    isPendingRegistration: Boolean(item.isPendingRegistration),
+    pendingRegistrationId: item.pendingRegistrationId || "",
+    pendingOriginalCode: item.pendingOriginalCode || "",
+  };
   if (Number.isFinite(Number(item.availableQty)) && Number.isFinite(Number(item.purchaseQty))) {
-    return { ...item, quantity, availableQty: Number(item.availableQty), cdQty: Number(item.cdQty) || 0, purchaseQty: Number(item.purchaseQty), withdrawnQty: Number(item.withdrawnQty) || 0, purchaseApproval: item.purchaseApproval || "" };
+    return { ...item, ...pendingData, quantity, availableQty: Number(item.availableQty), cdQty: Number(item.cdQty) || 0, purchaseQty: Number(item.purchaseQty), withdrawnQty: Number(item.withdrawnQty) || 0, purchaseApproval: item.purchaseApproval || "" };
   }
 
   if (requestStatus === "atendimento" || requestStatus === "retirado") {
-    return { ...item, quantity, availableQty: quantity, cdQty: 0, purchaseQty: 0, withdrawnQty: requestStatus === "retirado" ? quantity : 0, purchaseApproval: item.purchaseApproval || "" };
+    return { ...item, ...pendingData, quantity, availableQty: quantity, cdQty: 0, purchaseQty: 0, withdrawnQty: requestStatus === "retirado" ? quantity : 0, purchaseApproval: item.purchaseApproval || "" };
   }
 
   if (requestStatus === "compra") {
-    return { ...item, quantity, availableQty: 0, cdQty: 0, purchaseQty: quantity, withdrawnQty: 0, purchaseApproval: item.purchaseApproval || "approved" };
+    return { ...item, ...pendingData, quantity, availableQty: 0, cdQty: 0, purchaseQty: quantity, withdrawnQty: 0, purchaseApproval: item.purchaseApproval || "approved" };
   }
 
-  return { ...item, quantity, availableQty: 0, cdQty: 0, purchaseQty: 0, withdrawnQty: 0, purchaseApproval: item.purchaseApproval || "" };
+  return { ...item, ...pendingData, quantity, availableQty: 0, cdQty: 0, purchaseQty: 0, withdrawnQty: 0, purchaseApproval: item.purchaseApproval || "" };
 }
 
 async function syncFromSupabase() {
@@ -596,7 +631,7 @@ async function syncFromSupabase() {
       localStorage.setItem(REQUESTS_KEY, JSON.stringify(requests));
     }
     if (remoteUsers) {
-      managedUsers = remoteUsers;
+      managedUsers = remoteUsers.map((user) => normalizeAccount(user, user.email));
       localStorage.setItem(USERS_KEY, JSON.stringify(managedUsers));
     }
     if (remoteDeletedUsers) {
@@ -672,7 +707,9 @@ function loadManagedUsers() {
 
   try {
     const genericUsers = new Set(["pcm@empresa.com.br", "almox@empresa.com.br", "cd@empresa.com.br", "gerente@empresa.com.br", "admin@empresa.com.br"]);
-    return JSON.parse(stored).filter((user) => !genericUsers.has(String(user.email || "").toLowerCase()));
+    return JSON.parse(stored)
+      .map((user) => normalizeAccount(user, user.email))
+      .filter((user) => !genericUsers.has(String(user.email || "").toLowerCase()));
   } catch {
     return [];
   }
@@ -685,7 +722,7 @@ function saveManagedUsers() {
 
 function loadDeletedUsers() {
   try {
-    return JSON.parse(localStorage.getItem(DELETED_USERS_KEY) || "[]");
+    return JSON.parse(localStorage.getItem(DELETED_USERS_KEY) || "[]").map(normalizeLogin);
   } catch {
     return [];
   }
@@ -694,6 +731,25 @@ function loadDeletedUsers() {
 function saveDeletedUsers() {
   localStorage.setItem(DELETED_USERS_KEY, JSON.stringify(deletedUsers));
   replaceSupabaseDeletedUsers();
+}
+
+function normalizeLogin(login) {
+  const value = String(login || "").trim().toLowerCase().replace(/@jtptransportes\.com\.br$/, "");
+  return emailAliases[value] || value;
+}
+
+function defaultCorporateEmail(login) {
+  const value = normalizeLogin(login).replace(/@.*$/, "");
+  return value ? `${value}@jtptransportes.com.br` : "";
+}
+
+function normalizeAccount(user, email) {
+  const login = normalizeLogin(email || user.email);
+  return {
+    ...user,
+    email: login,
+    corporateEmail: String(user.corporateEmail || "").trim().toLowerCase() || defaultCorporateEmail(login),
+  };
 }
 
 function loadCustomParts() {
@@ -735,10 +791,11 @@ function getAvailableParts() {
 function getAllAccounts() {
   const merged = managedUsers.reduce(
     (acc, user) => {
-      acc[user.email] = user;
+      const normalizedUser = normalizeAccount(user, user.email);
+      acc[normalizedUser.email] = normalizedUser;
       return acc;
     },
-    { ...accounts }
+    Object.fromEntries(Object.entries(accounts).map(([email, user]) => [email, normalizeAccount(user, email)]))
   );
   deletedUsers.forEach((email) => {
     delete merged[email];
@@ -764,8 +821,9 @@ function loadSession() {
 
   try {
     const session = JSON.parse(stored);
-    const account = getAllAccounts()[session.email];
-    return account ? { ...session, role: account.role, label: roleLabel(account.role), name: account.name } : null;
+    const email = normalizeLogin(session.email);
+    const account = getAllAccounts()[email];
+    return account ? { ...session, email, role: account.role, label: roleLabel(account.role), name: account.name, corporateEmail: account.corporateEmail } : null;
   } catch {
     return null;
   }
@@ -783,6 +841,10 @@ function addItemLine() {
 
   searchInput.addEventListener("input", () => {
     searchInput.setCustomValidity("");
+    searchInput.dataset.code = "";
+    searchInput.dataset.description = "";
+    searchInput.dataset.registrationId = "";
+    searchInput.dataset.originalCode = "";
     updateSuggestions(line);
   });
   searchInput.addEventListener("focus", () => updateSuggestions(line));
@@ -795,6 +857,7 @@ function addItemLine() {
   });
 
   itemLines.append(line);
+  return line;
 }
 
 function updateSuggestions(line) {
@@ -817,6 +880,8 @@ function updateSuggestions(line) {
       input.value = `${part.code} - ${part.description}`;
       input.dataset.code = part.code;
       input.dataset.description = part.description;
+      input.dataset.registrationId = "";
+      input.dataset.originalCode = "";
       suggestions.classList.remove("open");
     });
     suggestions.append(button);
@@ -829,6 +894,7 @@ function updateSuggestions(line) {
     button.innerHTML = `<strong>Solicitar cadastro</strong><span>${escapeHtml(input.value.trim())}</span>`;
     button.addEventListener("click", () => {
       suggestions.classList.remove("open");
+      activePartRegistrationInput = input;
       openPartRegistrationDialog(input.value.trim());
     });
     suggestions.append(button);
@@ -867,7 +933,7 @@ function collectItems() {
       if (!lookup || quantity < 1) continue;
       const part = resolvePart(input);
       if (!part) {
-        input.setCustomValidity("Peça não cadastrada. Solicite o cadastro antes de abrir a solicitação.");
+        input.setCustomValidity("Peça não cadastrada. Clique em Solicitar cadastro para vincular esta peça ao pedido.");
         input.reportValidity();
         hasInvalidPart = true;
         break;
@@ -877,12 +943,20 @@ function collectItems() {
 
   return hasInvalidPart ? [] : items;
 }
-
 function resolvePart(input) {
   if (input.dataset.code && input.dataset.description) {
     return { code: input.dataset.code, description: input.dataset.description };
   }
 
+  if (input.dataset.registrationId && input.dataset.description) {
+    return {
+      code: "CADASTRO PENDENTE",
+      description: input.dataset.description,
+      isPendingRegistration: true,
+      pendingRegistrationId: input.dataset.registrationId,
+      pendingOriginalCode: input.dataset.originalCode || "",
+    };
+  }
   const value = input.value.trim();
   const normalized = value.toLowerCase();
   const found = getAvailableParts().find((part) => {
@@ -915,6 +989,9 @@ function render() {
   }
   if (currentPage === "admin") {
     renderUsers();
+    return;
+  }
+  if (currentPage === "part-admin") {
     renderPartRegistrations();
     return;
   }
@@ -934,6 +1011,7 @@ function render() {
       if (!isMine) return false;
       if (currentFilter === "atendimento") return hasPickupPending(request);
       if (currentFilter === "compra") return request.status === "aprovacao" || request.status === "compra" || request.status === "recebimento" || request.status === "reprovado";
+      if (currentFilter === "solicitacao") return request.status === "solicitacao" || request.status === "cadastro";
       return request.status === currentFilter;
     }
     if (currentUser.role === "cd") return request.status === "cd";
@@ -946,6 +1024,7 @@ function render() {
     if (currentUser.role === "almox" && currentFilter === "compra") {
       return request.status === "aprovacao" || request.status === "compra" || request.status === "recebimento";
     }
+    if (currentFilter === "solicitacao") return request.status === "solicitacao" || request.status === "cadastro";
     return request.status === currentFilter;
   });
 
@@ -1047,10 +1126,15 @@ function createCard(request) {
       </div>
     `;
     partsList.append(li);
-    if (request.status !== "compra" && request.status !== "aprovacao" && request.status !== "recebimento" && !pickupMode) {
+    if (request.status !== "cadastro" && request.status !== "compra" && request.status !== "aprovacao" && request.status !== "recebimento" && !pickupMode) {
       fulfillmentList.append(currentUser.role === "cd" ? createCdFulfillmentLine(item, index) : createFulfillmentLine(item, index));
     }
   });
+
+  if (request.status === "cadastro") {
+    fulfillmentPanel.hidden = true;
+    purchaseWorkflow.classList.remove("active");
+  }
 
   if (request.status === "aprovacao") {
     fulfillmentPanel.hidden = true;
@@ -1078,7 +1162,7 @@ function createCard(request) {
     emailButton.addEventListener("click", () => {
       saveCdFulfillment(request.id, card, true);
     });
-  } else if (request.status !== "compra" && request.status !== "aprovacao" && request.status !== "recebimento") {
+  } else if (request.status !== "cadastro" && request.status !== "compra" && request.status !== "aprovacao" && request.status !== "recebimento") {
     card.querySelector(".transfer-invoice-field").hidden = true;
     card.querySelector(".save-fulfillment").addEventListener("click", () => {
       saveFulfillment(request.id, card, false);
@@ -1119,7 +1203,7 @@ function createCard(request) {
   const purchaseLines = request.status === "recebimento"
     ? request.items.filter((item) => getPurchasePendingQty(item) > 0 || Number(item.cdQty) > 0)
     : request.items.filter((item) => getPurchasePendingQty(item) > 0);
-  fulfillmentPanel.hidden = (request.status === "compra" || request.status === "aprovacao" || request.status === "recebimento") && !pickupMode ? true : false;
+  fulfillmentPanel.hidden = (request.status === "cadastro" || request.status === "compra" || request.status === "aprovacao" || request.status === "recebimento") && !pickupMode ? true : false;
   purchaseWorkflow.classList.toggle("active", ((request.status === "compra" && currentUser.role === "compras") || (request.status === "recebimento" && currentUser.role === "almox")) && !pickupMode);
   if (currentUser.role === "cd") purchaseWorkflow.classList.remove("active");
   purchaseItems.innerHTML = purchaseLines.length
@@ -1447,6 +1531,8 @@ function clampQty(value, max) {
 }
 
 function calculateStatus(items) {
+  if (items.some(isPendingRegistrationItem)) return "cadastro";
+
   const totals = items.reduce(
     (acc, item) => {
       acc.requested += Number(item.quantity) || 0;
@@ -1489,6 +1575,7 @@ function calculateCdStatus(items) {
 }
 
 function getCdPendingQty(item) {
+  if (isPendingRegistrationItem(item)) return 0;
   if (Number.isFinite(Number(item.cdPendingQty))) return Number(item.cdPendingQty);
   const quantity = Number(item.quantity) || 0;
   const local = Number(item.availableQty) || 0;
@@ -1496,6 +1583,7 @@ function getCdPendingQty(item) {
 }
 
 function getPurchaseBaseQty(item) {
+  if (isPendingRegistrationItem(item)) return 0;
   const quantity = Number(item.quantity) || 0;
   const local = Number(item.availableQty) || 0;
   const cd = Number(item.cdQty) || 0;
@@ -1534,6 +1622,7 @@ function getItemPurchaseStatus(request, item) {
 }
 
 function getItemStageStatus(request, item) {
+  if (isPendingRegistrationItem(item)) return "Aguardando cadastro SAP";
   if (getWithdrawnQty(item) >= (Number(item.quantity) || 0)) return "Retirado";
   if (request.status === "recebimento" && ((Number(item.cdQty) || 0) > 0 || getPurchasePendingQty(item) > 0)) return "Pendente entrada e recebimento";
   if (getPurchaseBaseQty(item) > 0) return getItemPurchaseStatus(request, item);
@@ -1564,6 +1653,10 @@ function hasPickupPending(request) {
 }
 
 function getQtyStepClass(request, item, step) {
+  if (isPendingRegistrationItem(item)) {
+    return step === "requested" ? "active" : "idle";
+  }
+
   const valueByStep = {
     requested: Number(item.quantity) || 0,
     almox: Number(item.availableQty) || 0,
@@ -1673,10 +1766,10 @@ function updateMetrics() {
       acc[request.status] += 1;
       return acc;
     },
-    { solicitacao: 0, cd: 0, atendimento: 0, aprovacao: 0, compra: 0, recebimento: 0, reprovado: 0, retirado: 0 }
+    { solicitacao: 0, cadastro: 0, cd: 0, atendimento: 0, aprovacao: 0, compra: 0, recebimento: 0, reprovado: 0, retirado: 0 }
   );
 
-  document.querySelector("#metric-open").textContent = totals.solicitacao;
+  document.querySelector("#metric-open").textContent = totals.solicitacao + totals.cadastro;
   document.querySelector("#metric-stock").textContent = totals.atendimento + totals.retirado + totals.cd;
   document.querySelector("#metric-buy").textContent = totals.aprovacao + totals.compra + totals.recebimento;
   document.querySelector("#metric-done").textContent = requests.filter((request) => request.purchaseOrder).length;
@@ -1712,19 +1805,19 @@ function updateCopy() {
   if (currentUser.role === "pcm") {
     queueEyebrow.textContent = "PCM";
     queueTitle.textContent = "Minhas etapas";
-    queueSubtitle.textContent = "Acompanhe o retorno do Almoxarifado sem misturar com a abertura de pedido.";
+    queueSubtitle.textContent = "Veja o que está liberado ou pendente.";
   } else if (currentUser.role === "almox") {
     queueEyebrow.textContent = "Almoxarifado";
     queueTitle.textContent = "Fila de atendimento";
-    queueSubtitle.textContent = "Atenda o que tem em estoque local; o saldo segue para verificação do CD.";
+    queueSubtitle.textContent = "Informe estoque local e encaminhe saldos.";
   } else if (currentUser.role === "cd") {
-    queueEyebrow.textContent = "Centro de Distribuicao";
+    queueEyebrow.textContent = "CD";
     queueTitle.textContent = "Pendências para o CD";
-    queueSubtitle.textContent = "Veja apenas o que o almoxarifado não atendeu e informe o que o CD consegue liberar.";
+    queueSubtitle.textContent = "Atenda apenas o saldo enviado.";
   } else {
     queueEyebrow.textContent = "Gerente";
-    queueTitle.textContent = "Visao corporativa";
-    queueSubtitle.textContent = "Acompanhe solicitações, retiradas liberadas e compras SAP pendentes.";
+    queueTitle.textContent = "Painel corporativo";
+    queueSubtitle.textContent = "Pendências, retiradas e compras.";
   }
 }
 
@@ -1795,6 +1888,10 @@ function renderUsers() {
           ${createRoleOptions(user.role)}
         </select>
       </label>
+      <label class="user-corporate-field">
+        <small>E-mail corporativo</small>
+        <input class="user-corporate-email" type="email" value="${escapeAttr(user.corporateEmail || defaultCorporateEmail(user.email))}" />
+      </label>
       <label class="user-password-field">
         <small>Senha</small>
         <input class="user-password" type="text" value="${escapeAttr(user.password)}" />
@@ -1808,11 +1905,16 @@ function renderUsers() {
     .join("");
 }
 
+function isPendingRegistrationItem(item) {
+  return Boolean(item?.isPendingRegistration || item?.pendingRegistrationId);
+}
+
 function canManagePartRegistrations() {
-  return ["erik.lima", "bruno.medici"].includes(currentUser?.email);
+  return ["erik.barreto", "bruno.medici"].includes(currentUser?.email);
 }
 
 function openPartRegistrationDialog(description = "") {
+  if (!description) activePartRegistrationInput = null;
   partRegistrationMessage.textContent = "";
   partRegistrationMessage.className = "password-message";
   partRegistrationForm.reset();
@@ -1837,31 +1939,71 @@ function createPartRegistration(data) {
   });
 
   if (alreadyPending) {
-    partRegistrationMessage.textContent = "Esse cadastro já está pendente para o admin.";
-    partRegistrationMessage.className = "password-message error";
+    const pending = partRegistrations.find((item) => item.status === "pending" && item.description.toLowerCase() === description.toLowerCase() && item.originalCode.toLowerCase() === originalCode.toLowerCase());
+    linkPendingRegistrationToInput(pending, getPartRegistrationTargetInput());
+    partRegistrationMessage.textContent = "Esse cadastro já está pendente para o admin e foi vinculado à solicitação.";
+    partRegistrationMessage.className = "password-message success";
+    setTimeout(() => partRegistrationDialog.close(), 450);
     return;
   }
 
+  const registration = {
+    id: `CAD-${Date.now()}`,
+    description,
+    originalCode,
+    requestedBy: currentUser.name || currentUser.label,
+    requestedByEmail: currentUser.email,
+    createdAt: new Date().toISOString(),
+    status: "pending",
+    createdCode: "",
+    completedAt: "",
+    completedBy: "",
+    linkedRequestId: "",
+  };
   partRegistrations = [
-    {
-      id: `CAD-${Date.now()}`,
-      description,
-      originalCode,
-      requestedBy: currentUser.name || currentUser.label,
-      requestedByEmail: currentUser.email,
-      createdAt: new Date().toISOString(),
-      status: "pending",
-      createdCode: "",
-      completedAt: "",
-      completedBy: "",
-    },
+    registration,
     ...partRegistrations,
   ];
   savePartRegistrations();
   renderPartRegistrations();
+  linkPendingRegistrationToInput(registration, getPartRegistrationTargetInput());
   partRegistrationMessage.textContent = "Cadastro enviado para Erik e Bruno.";
   partRegistrationMessage.className = "password-message success";
   setTimeout(() => partRegistrationDialog.close(), 450);
+}
+
+function getPartRegistrationTargetInput() {
+  if (activePartRegistrationInput) return activePartRegistrationInput;
+  const emptyInput = [...itemLines.querySelectorAll('[name="partLookup"]')].find((input) => !input.value.trim());
+  if (emptyInput) return emptyInput;
+  const line = addItemLine();
+  return line.querySelector('[name="partLookup"]');
+}
+
+function linkPendingRegistrationToInput(registration, input) {
+  if (!registration || !input) return;
+  input.value = `[Cadastro pendente] ${registration.description}`;
+  input.dataset.code = "";
+  input.dataset.description = registration.description;
+  input.dataset.registrationId = registration.id;
+  input.dataset.originalCode = registration.originalCode;
+  input.setCustomValidity("");
+  activePartRegistrationInput = null;
+}
+
+function linkPartRegistrationsToRequest(request) {
+  const pendingIds = request.items
+    .filter(isPendingRegistrationItem)
+    .map((item) => item.pendingRegistrationId)
+    .filter(Boolean);
+  if (pendingIds.length === 0) return;
+
+  partRegistrations = partRegistrations.map((registration) =>
+    pendingIds.includes(registration.id)
+      ? { ...registration, linkedRequestId: request.id, linkedRequestBus: request.bus }
+      : registration
+  );
+  savePartRegistrations();
 }
 
 function renderPartRegistrations() {
@@ -1878,17 +2020,23 @@ function renderPartRegistrations() {
       const done = item.status === "done";
       return `<article class="part-registration-row ${done ? "done" : ""}" data-id="${escapeAttr(item.id)}">
         <div>
+          <small>Descrição PCM</small>
           <strong>${escapeHtml(item.description)}</strong>
-          <span>Código original: ${escapeHtml(item.originalCode)}</span>
-          <small>Solicitado por ${escapeHtml(item.requestedBy || "-")} em ${formatDateOrDash(item.createdAt)}</small>
+          <span>Código/Fabricante: ${escapeHtml(item.originalCode)}</span>
+          <small>Solicitado: ${formatDateOrDash(item.createdAt)}</small>
         </div>
         <label>
-          <small>Código SAP criado</small>
+          <small>Código SAP</small>
           <input class="created-part-code" value="${escapeAttr(item.createdCode || "")}" ${done || !canManage ? "disabled" : ""} placeholder="Ex.: 30000000" />
         </label>
-        <div><small>Status</small><b>${done ? "Cadastrado" : "Pendente SAP"}</b></div>
+        <label>
+          <small>Descrição SAP</small>
+          <textarea class="created-part-description" rows="2" ${done || !canManage ? "disabled" : ""} placeholder="Preencha ou use a existente">${escapeHtml(item.createdDescription || item.description || "")}</textarea>
+        </label>
+        <div><small>Status</small><b>${done ? item.resolvedAsExisting ? "Já existia" : "Cadastrado" : "Pendente SAP"}</b></div>
         <div class="user-actions">
-          <button class="secondary-action compact" type="button" data-part-action="save" ${done || !canManage ? "disabled" : ""}>Salvar cadastro</button>
+          <button class="secondary-action compact" type="button" data-part-action="existing" ${done || !canManage ? "disabled" : ""}>Já existe</button>
+          <button class="secondary-action compact" type="button" data-part-action="save" ${done || !canManage ? "disabled" : ""}>Criar cadastro</button>
           <button class="danger-action compact" type="button" data-part-action="delete" ${!canManage ? "disabled" : ""}>Excluir</button>
         </div>
       </article>`;
@@ -1896,29 +2044,84 @@ function renderPartRegistrations() {
     .join("");
 }
 
-function completePartRegistration(id, code) {
+function getRegistrationRequest(registration) {
+  if (!registration) return null;
+  return requests.find((request) => {
+    if (registration.linkedRequestId && request.id === registration.linkedRequestId) return true;
+    return request.items.some((item) => item.pendingRegistrationId === registration.id);
+  }) || null;
+}
+
+function completePartRegistration(id, code, finalDescription, useExisting = false) {
   if (!canManagePartRegistrations()) return;
   const cleanCode = String(code || "").trim();
   const registration = partRegistrations.find((item) => item.id === id);
-  if (!registration || !cleanCode) return;
+  if (!registration) return;
+  const existingPart = useExisting ? findPartByCode(cleanCode) : null;
+  const cleanDescription = String(existingPart?.description || finalDescription || "").trim();
+  if (!cleanCode || !cleanDescription) {
+    window.alert("Informe o código SAP e a descrição do item.");
+    return;
+  }
 
-  const part = { code: cleanCode, description: registration.description };
-  customParts = customParts.filter((item) => String(item.code) !== cleanCode);
-  customParts.unshift(part);
+  const part = { code: cleanCode, description: cleanDescription };
+  if (!useExisting || !existingPart) {
+    customParts = customParts.filter((item) => String(item.code) !== cleanCode);
+    customParts.unshift(part);
+  }
+  requests = requests.map((request) => {
+    let changed = false;
+    const items = request.items.map((item) => {
+      const matchesRegistration = item.pendingRegistrationId === id;
+      const matchesLegacyPending = isPendingRegistrationItem(item)
+        && String(item.description || "").toLowerCase() === registration.description.toLowerCase()
+        && String(item.pendingOriginalCode || "").toLowerCase() === registration.originalCode.toLowerCase();
+      if (!matchesRegistration && !matchesLegacyPending) return item;
+      changed = true;
+      return {
+        ...item,
+        code: cleanCode,
+        description: cleanDescription,
+        isPendingRegistration: false,
+        pendingRegistrationId: "",
+        pendingOriginalCode: "",
+      };
+    });
+    if (!changed) return request;
+    const hasPendingRegistration = items.some(isPendingRegistrationItem);
+    return {
+      ...request,
+      items,
+      status: hasPendingRegistration ? "cadastro" : "solicitacao",
+      response: hasPendingRegistration
+        ? request.response || "Solicitação aguardando cadastro de item."
+        : "Cadastro SAP concluído. Solicitação liberada para atendimento do Almoxarifado.",
+    };
+  });
   partRegistrations = partRegistrations.map((item) =>
     item.id === id
       ? {
           ...item,
           status: "done",
           createdCode: cleanCode,
+          createdDescription: cleanDescription,
+          resolvedAsExisting: Boolean(useExisting),
           completedAt: new Date().toISOString(),
           completedBy: currentUser.name || currentUser.label,
         }
       : item
   );
+  saveRequests();
   saveCustomParts();
   savePartRegistrations();
   renderPartRegistrations();
+  render();
+}
+
+function findPartByCode(code) {
+  const cleanCode = String(code || "").trim().toLowerCase();
+  if (!cleanCode) return null;
+  return getAvailableParts().find((part) => String(part.code || "").trim().toLowerCase() === cleanCode) || null;
 }
 
 function deletePartRegistration(id) {
@@ -1935,13 +2138,14 @@ function createRoleOptions(selectedRole) {
     .join("");
 }
 
-function updateUserAccess(email, password, role) {
+function updateUserAccess(email, password, role, corporateEmail = "") {
   const account = getAllAccounts()[email];
   if (!account) return;
 
   const updatedUser = {
     ...account,
     email,
+    corporateEmail: String(corporateEmail || account.corporateEmail || "").trim().toLowerCase() || defaultCorporateEmail(email),
     password: String(password || "").trim() || "1234",
     role,
     label: roleLabel(role),
@@ -2549,7 +2753,9 @@ function buildEmailBody(title, intro, sections) {
 function userLoginToEmail(login) {
   const value = String(login || "").trim().toLowerCase();
   if (!value) return "";
-  return value.includes("@") ? value : `${value}@empresa.com.br`;
+  const account = getAllAccounts()[normalizeLogin(value)];
+  if (account?.corporateEmail) return account.corporateEmail;
+  return value.includes("@") ? value : `${normalizeLogin(value)}@jtptransportes.com.br`;
 }
 
 function getDefaultCc(to) {
@@ -2580,6 +2786,27 @@ function openEmailDraft(request, to) {
   ]);
 
   openMailDraft(to, subject, bodyText);
+}
+
+function openPartRegistrationEmailDraft(request) {
+  const pendingItems = request.items.filter(isPendingRegistrationItem);
+  if (pendingItems.length === 0) return;
+
+  const recipients = userLoginToEmail("erik.barreto");
+  const subject = buildEmailSubject(request, "Cadastro de item");
+  const bodyText = buildEmailBody("Solicitação de Cadastro de Item", `Existem itens sem cadastro SAP na solicitação ${request.id}. Cadastre no SAP e informe código e descrição final na aba Cadastro de Item para liberar o Almoxarifado.`, [
+    { title: "Dados da Solicitação", content: `Solicitação: ${request.id}\nSolicitante: ${request.requestedBy}\nPrefixo: ${request.bus}\nPrioridade: ${request.priority}\nData: ${formatDate(request.createdAt)}` },
+    { title: "Itens para Cadastro", content: formatEmailItems(pendingItems, (item) => item.quantity, (item) => [
+      `CÓDIGO ORIGINAL: ${item.pendingOriginalCode || "-"}`,
+      `STATUS: Aguardando cadastro SAP`,
+    ]) },
+    { title: "Solicitação completa", content: formatEmailItems(request.items, (item) => item.quantity, (item) => [
+      isPendingRegistrationItem(item) ? "OBS.: item aguardando código SAP" : "",
+    ]) },
+    { title: "Motivo", content: request.reason },
+  ]);
+
+  setTimeout(() => openMailDraft(recipients, subject, bodyText), 250);
 }
 
 function openAlmoxEmailDraft(request, to) {
@@ -2648,6 +2875,7 @@ function openPurchaseEmailDraft(request, to) {
 function createProcessMap(request) {
   const steps = [
     { key: "solicitacao", label: "Solicitação", date: request.createdAt, done: Boolean(request.createdAt), active: false },
+    { key: "cadastro", label: "Cadastro SAP", date: "", done: request.status !== "cadastro" && !request.items.some(isPendingRegistrationItem), active: request.status === "cadastro" },
     { key: "atendimento", label: "Almoxarifado", date: request.attendedAt, done: Boolean(request.attendedAt), active: request.status === "solicitacao" },
     { key: "cd", label: "CD", date: request.cdAt, done: Boolean(request.cdAt), active: request.status === "cd" },
     { key: "aprovacao", label: "Aprovação", date: request.purchaseApprovedAt, done: Boolean(request.purchaseAt) || request.status === "reprovado", active: request.status === "aprovacao" },
@@ -2696,3 +2924,6 @@ function formatDate(value) {
     minute: "2-digit",
   }).format(new Date(value));
 }
+
+
+
