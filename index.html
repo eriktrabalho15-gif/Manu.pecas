@@ -6,7 +6,7 @@
     <title>ManuPeças | JTP Transportes</title>
     <link rel="icon" href="./favicon.ico" sizes="any" />
     <link rel="apple-touch-icon" href="./favicon.png" />
-    <link rel="stylesheet" href="./styles.css?v=20260807-mobile-clean" />
+    <link rel="stylesheet" href="./styles.css?v=20260810-arrival-almox" />
   </head>
   <body data-view="login">
     <section class="login-screen" id="login-screen">
@@ -24,6 +24,7 @@
         <p class="eyebrow">Ferramenta da JTP Transportes</p>
         <h1>ManuPeças</h1>
         <p class="login-subtitle">Entre na sua conta</p>
+        <p class="app-version">Versão 1.0</p>
 
         <form class="login-card" id="login-form">
           <label for="email">Usuário</label>
@@ -95,13 +96,24 @@
           <div class="page-heading">
             <p class="eyebrow">PCM</p>
             <h2>Abrir solicitação</h2>
-            <p>Informe prefixo, peças e motivo.</p>
+            <p>Informe aplicação, peças e motivo.</p>
           </div>
 
           <div class="form-grid">
             <div class="field">
+              <label for="request-target">Aplicação</label>
+              <select id="request-target" name="requestTarget">
+                <option value="prefixo">Prefixo</option>
+                <option value="frota">Frota</option>
+              </select>
+            </div>
+            <div class="field">
               <label for="bus">Prefixo</label>
-              <input id="bus" required name="bus" placeholder="Ex.: 1248" inputmode="numeric" />
+              <input id="bus" name="bus" placeholder="Ex.: 1248" inputmode="numeric" />
+            </div>
+            <div class="field">
+              <label for="maintainer">Manutentor</label>
+              <input id="maintainer" name="maintainer" required placeholder="Nome e sobrenome" />
             </div>
             <div class="field">
               <label for="priority">Prioridade</label>
@@ -203,6 +215,10 @@
               <label for="history-filter">Filtrar por peça</label>
               <input id="history-filter" placeholder="Código ou descrição" />
             </div>
+            <div class="field history-search">
+              <label for="history-prefix-filter">Filtrar por prefixo</label>
+              <input id="history-prefix-filter" placeholder="Prefixo ou Frota" />
+            </div>
             <div class="history-date-filters" aria-label="Filtrar por data dos atendimentos">
               <div class="field">
                 <label for="history-date-from">De</label>
@@ -221,7 +237,7 @@
               <strong id="sla-request">0min</strong>
             </article>
             <article class="executive-panel">
-              <span>SLA médio atendimento</span>
+              <span>SLA médio de atendimento</span>
               <strong id="sla-service">0min</strong>
             </article>
             <article class="executive-panel">
@@ -254,7 +270,7 @@
             <div>
               <p class="eyebrow">Gerente</p>
               <h2>Pendência de compras</h2>
-              <p>Itens, pedido SAP, chegada e SLA.</p>
+              <p>Itens, solicitação SAP, pedido de compra, chegada e SLA.</p>
             </div>
           </div>
 
@@ -430,6 +446,10 @@
               <dd class="requester"></dd>
             </div>
             <div>
+              <dt>Manutentor</dt>
+              <dd class="maintainer"></dd>
+            </div>
+            <div>
               <dt>Almoxarife</dt>
               <dd class="warehouse-user"></dd>
             </div>
@@ -461,22 +481,32 @@
             </div>
           </div>
           <div class="purchase-workflow">
-            <div class="purchase-title">Compra SAP</div>
+            <div class="purchase-title">Compra</div>
             <div class="purchase-items"></div>
+            <div class="field">
+              <label>Número da solicitação SAP</label>
+              <input class="sap-request-number" placeholder="Ex.: 1000123456" />
+            </div>
+            <button class="action available sap-request-save" type="button">Salvar solicitação SAP</button>
             <div class="field">
               <label>Número do pedido de compra</label>
               <input class="purchase-order" placeholder="Ex.: 4500123456" />
+            </div>
+            <div class="field buyer-note-field">
+              <label>Observação de Compras</label>
+              <textarea class="buyer-note" rows="3" placeholder="Atualização para o acompanhamento da compra"></textarea>
             </div>
             <div class="field">
               <label>Previsão de entrega</label>
               <input class="delivery-date" type="date" />
             </div>
-            <button class="action purchase-save" type="button">Salvar pedido SAP</button>
+            <button class="action purchase-save" type="button">Salvar pedido de compra</button>
             <button class="action purchase-email" type="button">Enviar e-mail de compra</button>
             <div class="field purchase-arrival-field">
-              <label>Data de chegada</label>
+              <label>Data real de chegada</label>
               <input class="arrival-date" type="date" />
             </div>
+            <button class="action available purchase-arrival-save" type="button">Registrar chegada da compra</button>
             <div class="field receipt-number-field">
               <label>Número de recebimento / entrada SAP</label>
               <input class="receipt-number" placeholder="Ex.: 5000123456" />
@@ -506,7 +536,7 @@
         SUPABASE_PUBLIC_KEY
       );
     </script>
-    <script src="./app.js?v=20260807-publicacao-github"></script>
+    <script src="./app.js?v=20260810-arrival-almox"></script>
   </body>
 </html>
 

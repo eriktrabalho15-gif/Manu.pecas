@@ -6,6 +6,7 @@ const DELETED_USERS_KEY = "pecas-transporte-usuarios-excluidos";
 const NOTIFICATION_READ_KEY = "pecas-transporte-notificacoes-lidas";
 const CUSTOM_PARTS_KEY = "pecas-transporte-pecas-cadastradas";
 const PART_REGISTRATIONS_KEY = "pecas-transporte-cadastros-pecas";
+const HISTORY_PURGE_KEY = "manupecas-limpeza-historico-20260810-01";
 const supabaseClient = window.manuPecasSupabase || null;
 
 const partsCatalog = Array.isArray(globalThis.PARTS_CATALOG) ? globalThis.PARTS_CATALOG : [];
@@ -36,11 +37,11 @@ const emailAliases = {
 };
 
 const statusText = {
-  solicitacao: "Pendente atendimento do Almoxarifado",
-  cd: "Pendente atendimento do CD",
+  solicitacao: "Pendente de atendimento do Almoxarifado",
+  cd: "Pendente de atendimento do CD",
   atendimento: "Retirada liberada para o PCM",
   aprovacao: "Aguardando aprovação de compra",
-  compra: "Compra SAP pendente",
+  compra: "Compra pendente",
   cadastro: "Aguardando cadastro da peça",
   recebimento: "Pendente entrada e recebimento pelo Almoxarifado",
   reprovado: "Compra não aprovada",
@@ -58,6 +59,7 @@ let currentUser = loadSession();
 let currentFilter = "solicitacao";
 let currentPage = "request";
 let activePartRegistrationInput = null;
+let userAccessFeedback = null;
 
 const body = document.body;
 const loginForm = document.querySelector("#login-form");
@@ -81,6 +83,8 @@ const requestTemplate = document.querySelector("#request-card-template");
 const itemTemplate = document.querySelector("#item-line-template");
 const itemLines = document.querySelector("#item-lines");
 const addItemButton = document.querySelector("#add-item-button");
+const requestTarget = document.querySelector("#request-target");
+const busInput = document.querySelector("#bus");
 const requestPartRegistrationButton = document.querySelector("#request-part-registration-button");
 const partRegistrationDialog = document.querySelector("#part-registration-dialog");
 const partRegistrationForm = document.querySelector("#part-registration-form");
@@ -96,6 +100,7 @@ const managerPendingItems = document.querySelector("#manager-pending-items");
 const managerBuyItems = document.querySelector("#manager-buy-items");
 const managerServiceRate = document.querySelector("#manager-service-rate");
 const historyFilter = document.querySelector("#history-filter");
+const historyPrefixFilter = document.querySelector("#history-prefix-filter");
 const historyDateFrom = document.querySelector("#history-date-from");
 const historyDateTo = document.querySelector("#history-date-to");
 const historyList = document.querySelector("#history-list");
@@ -181,10 +186,20 @@ passwordForm.addEventListener("submit", (event) => {
   changeOwnPassword(new FormData(passwordForm));
 });
 
+requestTarget.addEventListener("change", syncRequestTarget);
+syncRequestTarget();
+
 form.addEventListener("submit", (event) => {
   event.preventDefault();
   const data = new FormData(form);
+  const targetType = data.get("requestTarget") || "prefixo";
+  const bus = targetType === "frota" ? "Frota" : data.get("bus").trim();
   const items = collectItems();
+
+  if (targetType === "prefixo" && !bus) {
+    busInput.focus();
+    return;
+  }
 
   if (items.length === 0) {
     addItemLine();
@@ -193,7 +208,9 @@ form.addEventListener("submit", (event) => {
 
   const request = {
     id: makeCode(),
-    bus: data.get("bus").trim(),
+    bus,
+    targetType,
+    maintainer: data.get("maintainer").trim(),
     items,
     priority: data.get("priority"),
     reason: data.get("reason").trim(),
@@ -216,6 +233,7 @@ form.addEventListener("submit", (event) => {
   }
 
   form.reset();
+  syncRequestTarget();
   resetItemLines();
   currentFilter = "solicitacao";
   syncFilterButtons();
@@ -250,6 +268,7 @@ filterButtons.forEach((button) => {
 });
 
 historyFilter.addEventListener("input", () => renderHistory());
+historyPrefixFilter.addEventListener("input", () => renderHistory());
 historyDateFrom.addEventListener("change", () => renderHistory());
 historyDateTo.addEventListener("change", () => renderHistory());
 userForm.addEventListener("submit", (event) => {
@@ -259,7 +278,7 @@ userForm.addEventListener("submit", (event) => {
   const role = data.get("role");
   const user = {
     email,
-    corporateEmail: String(data.get("corporateEmail") || "").trim().toLowerCase() || defaultCorporateEmail(email),
+    corporateEmail: normalizeCorporateEmail(data.get("corporateEmail"), email),
     password: data.get("password").trim() || "1234",
     role,
     label: roleLabel(role),
@@ -285,12 +304,24 @@ userList.addEventListener("click", (event) => {
   if (!email) return;
 
   if (button.dataset.userAction === "save-password") {
-    updateUserAccess(email, row.querySelector(".user-password").value, row.querySelector(".user-role").value, row.querySelector(".user-corporate-email").value);
+    const account = getAllAccounts()[email];
+    const newCorporateEmail = normalizeCorporateEmail(row.querySelector(".user-corporate-email").value, email);
+    const emailChanged = account && normalizeCorporateEmail(account.corporateEmail, email) !== newCorporateEmail;
+    userAccessFeedback = { email, message: emailChanged ? "E-mail gravado com sucesso." : "Acesso gravado com sucesso." };
+    updateUserAccess(email, row.querySelector(".user-password").value, row.querySelector(".user-role").value, newCorporateEmail);
   }
 
   if (button.dataset.userAction === "delete-user") {
     deleteUser(email);
   }
+});
+
+userList.addEventListener("input", (event) => {
+  markUserRowChanged(event.target);
+});
+
+userList.addEventListener("change", (event) => {
+  markUserRowChanged(event.target);
 });
 
 partRegistrationList.addEventListener("click", (event) => {
@@ -335,8 +366,18 @@ async function startApp() {
   currentFilter = currentUser.role === "cd" ? "cd" : "solicitacao";
   resetItemLines();
   await syncFromSupabase();
+  await purgeHistoryOnce();
   setPage(currentPage);
   render();
+}
+
+function syncRequestTarget() {
+  if (!requestTarget || !busInput) return;
+  const isFleet = requestTarget.value === "frota";
+  busInput.required = !isFleet;
+  busInput.disabled = isFleet;
+  busInput.placeholder = isFleet ? "Solicitação para frota" : "Ex.: 1248";
+  if (isFleet) busInput.value = "";
 }
 
 function getUserGreeting(user) {
@@ -349,6 +390,10 @@ function getFirstName(user) {
   const rawName = user.name || user.email || "";
   const first = String(rawName).split(/[.\s_]+/).filter(Boolean)[0] || "usuario";
   return first.charAt(0).toUpperCase() + first.slice(1).toLowerCase();
+}
+
+function getRequestTargetLabel(request) {
+  return request?.targetType === "frota" || String(request?.bus || "").toLowerCase() === "frota" ? "Frota" : `Prefixo ${request?.bus || "-"}`;
 }
 
 function setPage(page) {
@@ -387,13 +432,13 @@ function saveReadNotifications(readSet) {
 function getUserNotifications() {
   if (!currentUser) return [];
   const notifications = [];
-  const push = (request, type, title, filter, page = "pending") => {
-    const items = getNotificationItemCount(request, filter);
+  const push = (request, type, title, filter, page = "pending", itemCount = null) => {
+    const items = itemCount ?? getNotificationItemCount(request, filter);
     notifications.push({
       id: `${request.id}:${type}:${request.status}:${items}`,
       requestId: request.id,
       title,
-      description: `${request.id} | Prefixo ${request.bus} | ${items} item(ns)`,
+      description: `${request.id} | ${getRequestTargetLabel(request)} | ${formatItemCount(items)}`,
       filter,
       page,
       items,
@@ -405,19 +450,25 @@ function getUserNotifications() {
     if (currentUser.role === "pcm" && isMine && hasPickupPending(request)) {
       push(request, "retirada", "Item liberado para retirada", "atendimento");
     }
+    if (currentUser.role === "pcm" && isMine && hasPurchasedItemWaitingReceipt(request)) {
+      push(request, "chegada-compra", "Item comprado chegou", "compra", "history", getReceiptPendingItems(request).length);
+    }
     if (currentUser.role === "almox") {
-      if (request.status === "solicitacao") push(request, "almox", "Pendente atendimento do Almoxarifado", "solicitacao");
-      if (request.status === "recebimento") push(request, "recebimento", "Pendente entrada e recebimento", "recebimento");
-      if (hasPickupPending(request)) push(request, "retirada", "Retirada PCM pendente", "atendimento");
+      if (request.status === "solicitacao") push(request, "almox", "Pendente de atendimento do Almoxarifado", "solicitacao");
+      if (getDisplayStatus(request) === "recebimento") push(request, "recebimento", "Pendente entrada e recebimento", "recebimento");
+      if (hasPickupPending(request)) push(request, "retirada", "Retirada do PCM pendente", "atendimento");
     }
     if (currentUser.role === "cd" && request.status === "cd") {
-      push(request, "cd", "Pendente atendimento do CD", "cd");
+      push(request, "cd", "Pendente de atendimento do CD", "cd");
     }
-    if (currentUser.role === "compras" && request.status === "compra" && getPurchasePendingQtySum(request) > 0) {
-      push(request, "compra", "Pendente pedido de compra", "compra", "purchase");
+    if (currentUser.role === "compras" && !isPurchaseArrivalRegistered(request) && (request.status === "compra" || hasApprovedPurchasePending(request)) && getPurchasePendingQtySum(request) > 0) {
+      push(request, "compra", "Pendente de pedido de compra", "compra", "purchase");
     }
-    if ((currentUser.role === "manager" || currentUser.role === "admin") && request.status === "aprovacao") {
+    if ((currentUser.role === "manager" || currentUser.role === "admin") && hasPurchaseApprovalPending(request)) {
       push(request, "aprovacao", "Compra aguardando aprovação", "compra", "approval");
+    }
+    if ((currentUser.role === "manager" || currentUser.role === "admin") && hasPurchasedItemWaitingReceipt(request)) {
+      push(request, "chegada-compra", "Item comprado chegou", "compra", "history", getReceiptPendingItems(request).length);
     }
   });
 
@@ -428,7 +479,7 @@ function getUserNotifications() {
       id: `cadastro-item:${pendingIds}`,
       requestId: "",
       title: "Cadastro de item pendente",
-      description: `${pendingPartRegistrations.length} item(ns) aguardando código SAP`,
+      description: `${formatItemCount(pendingPartRegistrations.length)} aguardando código SAP`,
       filter: "",
       page: "part-admin",
       items: pendingPartRegistrations.length,
@@ -440,10 +491,16 @@ function getUserNotifications() {
 
 function getNotificationItemCount(request, filter) {
   if (filter === "atendimento") return request.items.filter(isPickupItemPending).length;
-  if (filter === "recebimento") return request.items.filter((item) => getPurchasePendingQty(item) > 0 || Number(item.cdQty) > 0).length;
-  if (filter === "compra") return request.items.filter((item) => getPurchasePendingQty(item) > 0).length;
+  if (filter === "recebimento") return getReceiptPendingItems(request).length;
+  if (filter === "compra" && currentUser?.role === "compras") return request.items.filter((item) => getPurchasePendingQty(item) > 0 && item.purchaseApproval === "approved").length;
+  if (filter === "compra") return request.items.filter((item) => getPurchaseBaseQty(item) > 0 && item.purchaseApproval !== "approved" && item.purchaseApproval !== "rejected").length;
   if (filter === "cd") return request.items.filter((item) => getCdPendingQty(item) > 0).length;
   return request.items.length;
+}
+
+function formatItemCount(count) {
+  const value = Number(count) || 0;
+  return `${value} ${value === 1 ? "item" : "itens"}`;
 }
 
 function updateNotificationBadge() {
@@ -453,7 +510,7 @@ function updateNotificationBadge() {
   const unreadItems = unread.reduce((sum, item) => sum + item.items, 0);
   notificationCount.textContent = unreadItems;
   notificationButton.classList.toggle("has-unread", unread.length > 0);
-  notificationButton.title = `${unreadItems} item(ns) não lido(s) para você`;
+  notificationButton.title = `${formatItemCount(unreadItems)} não lido(s) para você`;
   if (!notificationPopover.hidden) renderNotifications();
 }
 
@@ -498,6 +555,10 @@ function navigateFromNotification(page, filter) {
     setPage("approval");
     return;
   }
+  if (page === "history") {
+    setPage("history");
+    return;
+  }
   if (page === "part-admin") {
     setPage("part-admin");
     return;
@@ -521,13 +582,18 @@ function normalizeRequest(request) {
   if (request.items) {
     return {
       ...request,
+      targetType: request.targetType || (String(request.bus || "").toLowerCase() === "frota" ? "frota" : "prefixo"),
       status: normalizedStatus || calculateStatus(request.items),
       purchaseOrder: request.purchaseOrder || "",
+      sapRequestNumber: request.sapRequestNumber || "",
+      sapRequestAt: request.sapRequestAt || "",
+      sapRequestBy: request.sapRequestBy || "",
+      buyerNote: request.buyerNote || "",
       deliveryDate: request.deliveryDate || "",
       purchaseArrivedDate: request.purchaseArrivedDate || "",
       purchaseArrivedAt: request.purchaseArrivedAt || "",
       receiptNumber: request.receiptNumber || "",
-      receiptAt: request.receiptAt || request.purchaseArrivedAt || "",
+      receiptAt: request.receiptAt || "",
       receiptBy: request.receiptBy || "",
       receiptByEmail: request.receiptByEmail || "",
       purchaseApprovalRequestedAt: request.purchaseApprovalRequestedAt || "",
@@ -538,6 +604,7 @@ function normalizeRequest(request) {
       pickupAt: request.pickupAt || "",
       withdrawnAt: request.withdrawnAt || "",
       requestedBy: request.requestedBy || "PCM",
+      maintainer: request.maintainer || "",
       requestedByEmail: request.requestedByEmail || "",
       almoxBy: request.almoxBy || "",
       almoxByEmail: request.almoxByEmail || "",
@@ -553,13 +620,18 @@ function normalizeRequest(request) {
   }
   return {
     ...request,
+    targetType: request.targetType || (String(request.bus || "").toLowerCase() === "frota" ? "frota" : "prefixo"),
     status: normalizedStatus,
     purchaseOrder: request.purchaseOrder || "",
+    sapRequestNumber: request.sapRequestNumber || "",
+    sapRequestAt: request.sapRequestAt || "",
+    sapRequestBy: request.sapRequestBy || "",
+    buyerNote: request.buyerNote || "",
     deliveryDate: request.deliveryDate || "",
     purchaseArrivedDate: request.purchaseArrivedDate || "",
     purchaseArrivedAt: request.purchaseArrivedAt || "",
     receiptNumber: request.receiptNumber || "",
-    receiptAt: request.receiptAt || request.purchaseArrivedAt || "",
+    receiptAt: request.receiptAt || "",
     receiptBy: request.receiptBy || "",
     receiptByEmail: request.receiptByEmail || "",
     purchaseApprovalRequestedAt: request.purchaseApprovalRequestedAt || "",
@@ -570,6 +642,7 @@ function normalizeRequest(request) {
     pickupAt: request.pickupAt || "",
     withdrawnAt: request.withdrawnAt || "",
     requestedBy: request.requestedBy || "PCM",
+    maintainer: request.maintainer || "",
     requestedByEmail: request.requestedByEmail || "",
     almoxBy: request.almoxBy || "",
     almoxByEmail: request.almoxByEmail || "",
@@ -649,6 +722,30 @@ async function syncFromSupabase() {
   } catch (error) {
     console.warn("Supabase indisponível. Usando dados locais.", error);
   }
+}
+
+async function purgeHistoryOnce() {
+  if (localStorage.getItem(HISTORY_PURGE_KEY) === "done") return;
+  requests = [];
+  partRegistrations = [];
+  localStorage.setItem(REQUESTS_KEY, JSON.stringify(requests));
+  localStorage.setItem(PART_REGISTRATIONS_KEY, JSON.stringify(partRegistrations));
+
+  if (supabaseClient) {
+    try {
+      const results = await Promise.all([
+        supabaseClient.from("manupecas_requests").delete().neq("id", "__never__"),
+        supabaseClient.from("manupecas_part_registrations").delete().neq("id", "__never__"),
+      ]);
+      results.forEach(({ error }) => {
+        if (error) console.warn("Erro ao limpar histórico remoto:", error.message);
+      });
+    } catch (error) {
+      console.warn("Não foi possível limpar o histórico remoto.", error);
+    }
+  }
+
+  localStorage.setItem(HISTORY_PURGE_KEY, "done");
 }
 
 async function loadSupabaseRows(table, keyField) {
@@ -743,12 +840,16 @@ function defaultCorporateEmail(login) {
   return value ? `${value}@jtptransportes.com.br` : "";
 }
 
+function normalizeCorporateEmail(email, login) {
+  return String(email || "").trim().toLowerCase() || defaultCorporateEmail(login);
+}
+
 function normalizeAccount(user, email) {
   const login = normalizeLogin(email || user.email);
   return {
     ...user,
     email: login,
-    corporateEmail: String(user.corporateEmail || "").trim().toLowerCase() || defaultCorporateEmail(login),
+    corporateEmail: normalizeCorporateEmail(user.corporateEmail, login),
   };
 }
 
@@ -1016,7 +1117,7 @@ function render() {
     }
     if (currentUser.role === "cd") return request.status === "cd";
     if (currentUser.role === "almox" && currentFilter === "recebimento") {
-      return request.status === "recebimento";
+      return getDisplayStatus(request) === "recebimento";
     }
     if (currentUser.role === "almox" && currentFilter === "atendimento") {
       return request.status === "atendimento" || hasPickupPending(request);
@@ -1054,50 +1155,61 @@ function createCard(request) {
   const purchaseWorkflow = card.querySelector(".purchase-workflow");
   const purchaseTitle = card.querySelector(".purchase-title");
   const purchaseItems = card.querySelector(".purchase-items");
+  const sapRequestInput = card.querySelector(".sap-request-number");
+  const sapRequestSaveButton = card.querySelector(".sap-request-save");
   const purchaseOrderInput = card.querySelector(".purchase-order");
   const deliveryDateInput = card.querySelector(".delivery-date");
+  const buyerNoteInput = card.querySelector(".buyer-note");
   const arrivalDateInput = card.querySelector(".arrival-date");
   const purchaseSaveButton = card.querySelector(".purchase-save");
   const purchaseEmailButton = card.querySelector(".purchase-email");
   const purchaseArrivalButton = card.querySelector(".purchase-arrival");
+  const purchaseArrivalSaveButton = card.querySelector(".purchase-arrival-save");
   const transferInvoiceInput = card.querySelector(".transfer-invoice");
   const invoiceName = card.querySelector(".invoice-name");
   const receiptNumberInput = card.querySelector(".receipt-number");
   const receiptPasswordInput = card.querySelector(".receipt-password");
   const receiptMessage = card.querySelector(".receipt-message");
 
-  status.textContent = pickupOnlyView ? statusText.atendimento : statusText[request.status];
-  status.className = `status-pill status-${pickupOnlyView ? "atendimento" : request.status}`;
+  const displayStatus = pickupOnlyView ? "atendimento" : getDisplayStatus(request);
+  const isReceiptFlow = displayStatus === "recebimento";
+  status.textContent = statusText[displayStatus];
+  status.className = `status-pill status-${displayStatus}`;
   card.querySelector(".request-summary").addEventListener("click", () => card.classList.toggle("expanded"));
   card.querySelector(".request-code").textContent = request.id;
   card.querySelector("h3").textContent = displayItems.map((item) => item.description).join(", ");
   card.querySelector(".sla-pill").textContent = `SLA ${formatDuration(request.createdAt, new Date().toISOString())}`;
-  card.querySelector(".bus-summary").textContent = `Prefixo ${request.bus}`;
-  card.querySelector(".items-summary").textContent = `${displayItems.length} item(ns)`;
+  card.querySelector(".bus-summary").textContent = getRequestTargetLabel(request);
+  card.querySelector(".items-summary").textContent = formatItemCount(displayItems.length);
   card.querySelector(".priority-summary").textContent = request.priority;
   card.querySelector(".bus").textContent = request.bus;
   card.querySelector(".quantity").textContent = displayItems.length;
   card.querySelector(".priority").textContent = request.priority;
   card.querySelector(".created").textContent = formatDate(request.createdAt);
   card.querySelector(".requester").textContent = request.requestedBy || "-";
+  card.querySelector(".maintainer").textContent = request.maintainer || "-";
   card.querySelector(".warehouse-user").textContent = request.almoxBy || "-";
   card.querySelector(".reason").textContent = request.reason;
   response.textContent = request.response;
   note.value = request.response;
-  purchaseTitle.textContent = request.status === "recebimento" ? "Recebimento e entrada SAP" : "Compra";
+  purchaseTitle.textContent = isReceiptFlow ? "Recebimento e entrada SAP" : "Compra";
+  sapRequestInput.value = request.sapRequestNumber || "";
+  sapRequestInput.readOnly = currentUser.role !== "almox" || Boolean(request.sapRequestNumber);
   purchaseOrderInput.value = request.purchaseOrder || "";
-  purchaseOrderInput.readOnly = currentUser.role !== "compras" || Boolean(request.purchaseOrder);
+  purchaseOrderInput.readOnly = currentUser.role !== "compras" || Boolean(request.purchaseOrder) || !request.sapRequestNumber;
+  buyerNoteInput.value = request.buyerNote || "";
+  buyerNoteInput.readOnly = currentUser.role !== "compras";
   deliveryDateInput.value = request.deliveryDate || "";
   arrivalDateInput.value = request.purchaseArrivedDate || "";
   invoiceName.textContent = request.transferInvoiceName ? `NF anexada: ${request.transferInvoiceName}` : "";
   receiptNumberInput.value = request.receiptNumber || "";
   receiptMessage.textContent = request.receiptNumber ? `Recebimento registrado: ${request.receiptNumber}` : "";
   card.querySelector(".transfer-invoice-field").hidden = true;
-  card.querySelector(".receipt-number-field").hidden = request.status !== "recebimento";
-  card.querySelector(".receipt-password-field").hidden = request.status !== "recebimento";
+  card.querySelector(".receipt-number-field").hidden = !isReceiptFlow;
+  card.querySelector(".receipt-password-field").hidden = !isReceiptFlow;
   deliveryDateInput.closest(".field").hidden = true;
-  card.querySelector(".purchase-arrival-field").hidden = request.status !== "recebimento";
-  arrivalDateInput.disabled = true;
+  card.querySelector(".purchase-arrival-field").hidden = !(isReceiptFlow || (request.status === "compra" && currentUser.role === "almox" && request.purchaseOrder && hasApprovedPurchasePending(request)));
+  arrivalDateInput.disabled = isReceiptFlow;
   purchaseWorkflow.classList.remove("active");
   card.querySelector(".process-map").innerHTML = createProcessMap(request);
 
@@ -1200,34 +1312,54 @@ function createCard(request) {
     purchaseWorkflow.classList.remove("active");
   }
 
-  const purchaseLines = request.status === "recebimento"
-    ? request.items.filter((item) => getPurchasePendingQty(item) > 0 || Number(item.cdQty) > 0)
+  const purchaseLines = isReceiptFlow
+    ? getReceiptPendingItems(request)
     : request.items.filter((item) => getPurchasePendingQty(item) > 0);
-  fulfillmentPanel.hidden = (request.status === "cadastro" || request.status === "compra" || request.status === "aprovacao" || request.status === "recebimento") && !pickupMode ? true : false;
-  purchaseWorkflow.classList.toggle("active", ((request.status === "compra" && currentUser.role === "compras") || (request.status === "recebimento" && currentUser.role === "almox")) && !pickupMode);
+  fulfillmentPanel.hidden = (request.status === "cadastro" || request.status === "compra" || request.status === "aprovacao" || isReceiptFlow) && !pickupMode ? true : false;
+  purchaseWorkflow.classList.toggle("active", ((request.status === "compra" && currentUser.role === "compras") || (isReceiptFlow && currentUser.role === "almox")) && !pickupMode);
+  if (request.status === "compra" && currentUser.role === "almox") purchaseWorkflow.classList.add("active");
   if (currentUser.role === "cd") purchaseWorkflow.classList.remove("active");
   purchaseItems.innerHTML = purchaseLines.length
     ? purchaseLines.map((item) => {
+      const cdReceiptQty = Number(item.cdQty) || 0;
+      const purchaseReceiptQty = isPurchaseArrivalRegistered(request) && item.purchaseApproval === "approved" ? getPurchasePendingQty(item) : 0;
+      const receiptNotes = isReceiptFlow
+        ? [
+          cdReceiptQty > 0 ? `CD: ${cdReceiptQty} un.` : "",
+          purchaseReceiptQty > 0 ? `Compra: ${purchaseReceiptQty} un.` : "",
+          cdReceiptQty > 0 ? `NF transferência: ${request.transferInvoiceName || "não informada"}` : "",
+        ].filter(Boolean).join(" | ")
+        : "";
       return `<div>
         <strong>${item.code}</strong>
         <span>${item.description}</span>
-        <em>${request.status === "recebimento" ? `${(Number(item.cdQty) || 0) + getPurchasePendingQty(item)} un. para entrada e recebimento` : `${getPurchasePendingQty(item)} un. para compra`}</em>
+        <em>${isReceiptFlow ? `${cdReceiptQty + purchaseReceiptQty} un. para entrada e recebimento` : `${getPurchasePendingQty(item)} un. para compra`}</em>
+        ${receiptNotes ? `<small>${receiptNotes}</small>` : ""}
       </div>`;
     }).join("")
-    : `<div><span>${request.status === "recebimento" ? "Nenhum item pendente de entrada e recebimento." : "Nenhum item pendente de compra."}</span></div>`;
+    : `<div><span>${isReceiptFlow ? "Nenhum item pendente de entrada e recebimento." : "Nenhum item pendente de compra."}</span></div>`;
   purchaseSaveButton.addEventListener("click", () => savePurchaseOrder(request.id, card, false));
   purchaseEmailButton.addEventListener("click", () => savePurchaseOrder(request.id, card, true));
+  sapRequestSaveButton.addEventListener("click", () => saveSapRequestNumber(request.id, card));
+  purchaseArrivalSaveButton.addEventListener("click", () => registerPurchaseArrival(request.id, card));
   purchaseArrivalButton.addEventListener("click", () => confirmReceiptEntry(request.id, card));
-  purchaseSaveButton.textContent = request.purchaseOrder ? "Atualizar data de chegada" : "Salvar pedido de compra";
+  purchaseSaveButton.textContent = request.purchaseOrder ? "Atualizar previsão de entrega" : "Salvar pedido de compra";
   purchaseSaveButton.hidden = request.status !== "compra" || currentUser.role !== "compras";
   purchaseEmailButton.hidden = request.status !== "compra" || currentUser.role !== "compras";
-  purchaseArrivalButton.hidden = request.status !== "recebimento" || currentUser.role !== "almox";
-  purchaseOrderInput.closest(".field").hidden = request.status === "recebimento" && !request.purchaseOrder;
-  deliveryDateInput.closest(".field").hidden = request.status !== "compra";
+  sapRequestSaveButton.hidden = request.status !== "compra" || currentUser.role !== "almox" || Boolean(request.sapRequestNumber);
+  purchaseArrivalSaveButton.hidden = request.status !== "compra" || currentUser.role !== "almox" || !request.purchaseOrder || !hasApprovedPurchasePending(request);
+  purchaseArrivalButton.hidden = !isReceiptFlow || currentUser.role !== "almox";
+  sapRequestInput.closest(".field").hidden = isReceiptFlow && !request.sapRequestNumber;
+  purchaseOrderInput.closest(".field").hidden = currentUser.role !== "compras" && !request.purchaseOrder;
+  deliveryDateInput.closest(".field").hidden = request.status !== "compra" || currentUser.role !== "compras";
+  buyerNoteInput.closest(".field").hidden = currentUser.role !== "compras" && !request.buyerNote;
+  purchaseSaveButton.disabled = currentUser.role === "compras" && !request.sapRequestNumber;
+  purchaseSaveButton.title = request.sapRequestNumber ? "" : "Aguardando o Almoxarifado informar a solicitação SAP";
   purchaseEmailButton.disabled = !request.purchaseOrder;
-  purchaseEmailButton.title = request.purchaseOrder ? "Enviar e-mail com pedido SAP" : "Informe e salve o pedido SAP antes de enviar";
-  purchaseArrivalButton.disabled = !request.purchaseOrder && getPurchasePendingQtySum(request) > 0;
-  purchaseArrivalButton.title = request.purchaseOrder || getCdReceivedQtySum(request) > 0 ? "Confirmar recebimento, entrada SAP e liberar retirada" : "Aguardando pedido de compra ou transferência do CD";
+  purchaseEmailButton.title = request.purchaseOrder ? "Enviar e-mail com pedido de compra" : "Informe e salve o pedido de compra antes de enviar";
+  const hasReceiptLine = getReceiptPendingItems(request).length > 0;
+  purchaseArrivalButton.disabled = !hasReceiptLine;
+  purchaseArrivalButton.title = hasReceiptLine ? "Confirmar recebimento, entrada SAP e liberar retirada" : "Aguardando item recebido do CD ou compra com data de chegada";
 
   if (pickupMode) {
     const doneButton = document.createElement("button");
@@ -1251,6 +1383,12 @@ function createFulfillmentLine(item, index) {
   row.dataset.code = item.code;
   row.dataset.index = index;
   const wms = getWmsSummary(item.code);
+  const cd = getCdWmsSummary(item.code);
+  const requestedQty = Number(item.quantity) || 0;
+  const localQty = Number(item.availableQty) || 0;
+  const remainingQty = Math.max(0, requestedQty - localQty);
+  const defaultCdQty = Number.isFinite(Number(item.cdPendingQty)) ? Number(item.cdPendingQty) : cd.found ? remainingQty : 0;
+  const defaultPurchaseQty = Math.max(0, remainingQty - defaultCdQty);
   row.innerHTML = `
     <div>
       <strong>${item.code}</strong>
@@ -1258,7 +1396,8 @@ function createFulfillmentLine(item, index) {
       <em>Solicitado: ${item.quantity}</em>
       <span class="inventory-badges">
         <small class="pending-owner">Pendente Almoxarifado</small>
-        <small class="${wms.found ? "wms-found" : "wms-missing"}">${wms.text}</small>
+        <small class="${wms.found ? "wms-found" : "wms-missing"}">Almox: ${wms.text}</small>
+        <small class="${cd.found ? "cd-found" : "cd-missing"}">CD: ${cd.text}</small>
       </span>
     </div>
     <label>
@@ -1267,13 +1406,27 @@ function createFulfillmentLine(item, index) {
     </label>
     <label>
       Vai ao CD
-      <input name="cdPendingQty" type="number" min="0" max="${item.quantity}" value="${getCdPendingQty(item)}" readonly />
+      <input name="cdPendingQty" type="number" min="0" max="${item.quantity}" value="${defaultCdQty}" />
+    </label>
+    <label>
+      Compra
+      <input name="purchaseQty" type="number" min="0" max="${item.quantity}" value="${defaultPurchaseQty}" readonly />
     </label>
   `;
-  row.querySelector('[name="availableQty"]').addEventListener("input", (event) => {
-    const availableQty = clampQty(event.target.value, item.quantity);
-    row.querySelector('[name="cdPendingQty"]').value = Math.max(0, item.quantity - availableQty);
+  const syncSplit = () => {
+    const availableQty = clampQty(row.querySelector('[name="availableQty"]').value, item.quantity);
+    const remaining = Math.max(0, item.quantity - availableQty);
+    const cdPendingQty = clampQty(row.querySelector('[name="cdPendingQty"]').value, remaining);
+    row.querySelector('[name="cdPendingQty"]').value = cdPendingQty;
+    row.querySelector('[name="purchaseQty"]').value = Math.max(0, remaining - cdPendingQty);
+  };
+  row.querySelector('[name="availableQty"]').addEventListener("input", () => {
+    const availableQty = clampQty(row.querySelector('[name="availableQty"]').value, item.quantity);
+    const remaining = Math.max(0, item.quantity - availableQty);
+    row.querySelector('[name="cdPendingQty"]').value = cd.found ? remaining : 0;
+    syncSplit();
   });
+  row.querySelector('[name="cdPendingQty"]').addEventListener("input", syncSplit);
   return row;
 }
 
@@ -1313,18 +1466,25 @@ function saveFulfillment(id, card, shouldEmail) {
 
     const availableQty = clampQty(row.querySelector('[name="availableQty"]').value, item.quantity);
     const remaining = Math.max(0, item.quantity - availableQty);
-    const cdPendingQty = remaining;
+    const cdPendingQty = clampQty(row.querySelector('[name="cdPendingQty"]').value, remaining);
     const cdQty = 0;
-    const purchaseQty = 0;
+    const purchaseQty = Math.max(0, remaining - cdPendingQty);
     return { ...item, availableQty, cdQty, purchaseQty, cdPendingQty };
   });
 
   const status = calculateAlmoxStatus(updatedItems);
+  const finalItems = updatedItems.map((item) => {
+    if (getPurchaseBaseQty(item) > 0) {
+      return { ...item, purchaseApproval: item.purchaseApproval || "pending" };
+    }
+    return item;
+  });
   const note = card.querySelector("textarea").value.trim();
-  const response = note || buildResponseText(updatedItems);
-  const updatedRequest = { ...request, items: updatedItems, status, response, answeredAt: new Date().toISOString() };
+  const response = note || buildResponseText(finalItems);
+  const updatedRequest = { ...request, items: finalItems, status, response, answeredAt: new Date().toISOString() };
   updatedRequest.attendedAt = updatedRequest.answeredAt;
   updatedRequest.purchaseAt = status === "compra" ? updatedRequest.answeredAt : request.purchaseAt || "";
+  updatedRequest.purchaseApprovalRequestedAt = finalItems.some((item) => item.purchaseApproval === "pending") ? request.purchaseApprovalRequestedAt || updatedRequest.answeredAt : request.purchaseApprovalRequestedAt || "";
   updatedRequest.almoxBy = currentUser.name || currentUser.label;
   updatedRequest.almoxByEmail = currentUser.email;
 
@@ -1348,12 +1508,13 @@ async function saveCdFulfillment(id, card, shouldEmail) {
     const pendingCd = getCdPendingQty(item);
     const cdQty = clampQty(row.querySelector('[name="cdQty"]').value, pendingCd);
     const purchaseQty = Math.max(0, pendingCd - cdQty);
-    return { ...item, cdQty, purchaseQty, cdPendingQty: pendingCd };
+    return { ...item, cdQty, purchaseQty, cdPendingQty: 0 };
   });
 
-  const status = calculateCdStatus(updatedItems);
+  const cdAnsweredQty = updatedItems.reduce((sum, item) => sum + (Number(item.cdQty) || 0), 0);
+  const status = cdAnsweredQty > 0 ? "recebimento" : calculateCdStatus(updatedItems);
   const finalItems = updatedItems.map((item) => {
-    if (status === "aprovacao" && getPurchaseBaseQty(item) > 0) {
+    if (getPurchaseBaseQty(item) > 0) {
       return { ...item, purchaseApproval: item.purchaseApproval || "pending" };
     }
     return item;
@@ -1365,7 +1526,6 @@ async function saveCdFulfillment(id, card, shouldEmail) {
   const selectedInvoiceDataUrl = invoiceInput.files.length ? await readFileAsDataUrl(invoiceInput.files[0]) : "";
   const transferInvoiceName = selectedInvoice || request.transferInvoiceName || "";
   const transferInvoiceDataUrl = selectedInvoiceDataUrl || request.transferInvoiceDataUrl || "";
-  const cdAnsweredQty = updatedItems.reduce((sum, item) => sum + (Number(item.cdQty) || 0), 0);
 
   if (cdAnsweredQty > 0 && !transferInvoiceName) {
     card.querySelector(".invoice-name").textContent = "Selecione a NF de transferência antes de salvar.";
@@ -1384,7 +1544,7 @@ async function saveCdFulfillment(id, card, shouldEmail) {
     transferInvoiceName,
     transferInvoiceDataUrl,
     purchaseAt: request.purchaseAt || "",
-    purchaseApprovalRequestedAt: status === "aprovacao" ? now : request.purchaseApprovalRequestedAt || "",
+    purchaseApprovalRequestedAt: finalItems.some((item) => item.purchaseApproval === "pending") ? request.purchaseApprovalRequestedAt || now : request.purchaseApprovalRequestedAt || "",
     attendedAt: request.attendedAt || now,
   };
 
@@ -1402,23 +1562,29 @@ function savePurchaseOrder(id, card, shouldEmail) {
   if (currentUser.role !== "compras") return;
   const request = requests.find((item) => item.id === id);
   if (!request) return;
+  if (!request.sapRequestNumber) {
+    window.alert("Aguardando o Almoxarifado informar a solicitação SAP.");
+    return;
+  }
 
   const purchaseOrder = request.purchaseOrder || card.querySelector(".purchase-order").value.trim();
   const deliveryDate = card.querySelector(".delivery-date").value;
+  const buyerNote = card.querySelector(".buyer-note").value.trim();
   if (!purchaseOrder) {
     card.querySelector(".purchase-order").focus();
     return;
   }
+  const hasCdReceiptPending = request.items.some((item) => Number(item.cdQty) > 0);
   const updatedRequest = {
     ...request,
-    items: request.items.map((item) => ({ ...item, purchaseQty: getPurchasePendingQty(item) })),
+    items: request.items.map((item) => (item.purchaseApproval === "approved" ? { ...item, purchaseQty: getPurchasePendingQty(item) } : item)),
     purchaseOrder,
+    buyerNote,
     deliveryDate,
     response: deliveryDate
-      ? `Itens pendentes em compra no SAP. Pedido: ${purchaseOrder}. Previsão de entrega: ${formatDateOnly(deliveryDate)}.`
+      ? `Pedido de compra registrado. Pedido: ${purchaseOrder}. Previsão de entrega: ${formatDateOnly(deliveryDate)}. Aguardando chegada.`
       : `Itens pendentes enviados para compra no SAP. Pedido: ${purchaseOrder}. Pendente previsão de entrega.`,
-    purchaseArrivedDate: deliveryDate || request.purchaseArrivedDate || "",
-    status: deliveryDate ? "recebimento" : "compra",
+    status: hasCdReceiptPending ? "recebimento" : "compra",
     purchaseAt: request.purchaseAt || new Date().toISOString(),
   };
 
@@ -1429,6 +1595,48 @@ function savePurchaseOrder(id, card, shouldEmail) {
     openPurchaseEmailDraft(updatedRequest, "");
   }
 
+  render();
+}
+
+function saveSapRequestNumber(id, card) {
+  if (currentUser.role !== "almox") return;
+  const request = requests.find((item) => item.id === id);
+  if (!request) return;
+  const sapRequestNumber = card.querySelector(".sap-request-number").value.trim();
+  if (!sapRequestNumber) {
+    card.querySelector(".sap-request-number").focus();
+    return;
+  }
+  const now = new Date().toISOString();
+  const updatedRequest = {
+    ...request,
+    sapRequestNumber,
+    sapRequestAt: request.sapRequestAt || now,
+    sapRequestBy: currentUser.name || currentUser.label,
+    response: `Solicitação SAP registrada pelo Almoxarifado: ${sapRequestNumber}. Aguardando pedido de compra pelo time de Compras.`,
+  };
+  requests = requests.map((item) => (item.id === id ? updatedRequest : item));
+  saveRequests();
+  render();
+}
+
+function registerPurchaseArrival(id, card) {
+  if (currentUser.role !== "almox") return;
+  const request = requests.find((item) => item.id === id);
+  if (!request) return;
+  const arrivedDate = card.querySelector(".arrival-date").value || getTodayDateInputValue();
+  const now = new Date().toISOString();
+  const updatedRequest = {
+    ...request,
+    status: "recebimento",
+    purchaseArrivedDate: arrivedDate,
+    purchaseArrivedAt: now,
+    purchaseArrivedBy: currentUser.name || currentUser.label,
+    response: `Item comprado chegou ao Almoxarifado em ${formatDateOnly(arrivedDate)}. Pendente entrada e recebimento no SAP.`,
+  };
+
+  requests = requests.map((item) => (item.id === id ? updatedRequest : item));
+  saveRequests();
   render();
 }
 
@@ -1451,11 +1659,13 @@ function confirmReceiptEntry(id, card) {
     return;
   }
 
-  const today = new Date().toISOString().slice(0, 10);
-  const purchaseArrivedDate = request.deliveryDate || card.querySelector(".arrival-date").value || today;
+  const today = getTodayDateInputValue();
+  const purchaseArrivedDate = request.purchaseArrivedDate || card.querySelector(".arrival-date").value || today;
   const now = new Date().toISOString();
+  const receiptCodes = new Set(getReceiptPendingItems(request).map((item) => item.code));
   const items = request.items.map((item) => {
-    const purchasedQty = getPurchasePendingQty(item);
+    if (!receiptCodes.has(item.code)) return item;
+    const purchasedQty = isPurchaseArrivalRegistered(request) && item.purchaseApproval === "approved" ? getPurchasePendingQty(item) : 0;
     const cdQty = Number(item.cdQty) || 0;
     return {
       ...item,
@@ -1463,20 +1673,29 @@ function confirmReceiptEntry(id, card) {
       cdReceivedQty: (Number(item.cdReceivedQty) || 0) + cdQty,
       purchaseReceivedQty: (Number(item.purchaseReceivedQty) || 0) + purchasedQty,
       cdQty: 0,
-      purchaseQty: 0,
+      purchaseQty: purchasedQty > 0 ? 0 : Number(item.purchaseQty) || getPurchasePendingQty(item),
     };
   });
+  const hasApprovalPendingAfterReceipt = items.some((item) => getPurchaseBaseQty(item) > 0 && item.purchaseApproval !== "approved" && item.purchaseApproval !== "rejected");
+  const hasApprovedPurchaseAfterReceipt = items.some((item) => getPurchasePendingQty(item) > 0 && item.purchaseApproval === "approved");
   const updatedRequest = {
     ...request,
-    status: "atendimento",
-    items,
+    status: hasApprovalPendingAfterReceipt ? "aprovacao" : hasApprovedPurchaseAfterReceipt ? "compra" : "atendimento",
+    items: hasApprovalPendingAfterReceipt
+      ? items.map((item) => (getPurchaseBaseQty(item) > 0 ? { ...item, purchaseApproval: item.purchaseApproval || "pending" } : item))
+      : items,
     purchaseArrivedDate,
     purchaseArrivedAt: now,
     receiptNumber,
     receiptAt: now,
     receiptBy: currentUser.name || currentUser.label,
     receiptByEmail: currentUser.email,
-    response: `Recebimento confirmado pelo Almoxarifado. Entrada SAP: ${receiptNumber}. Data de chegada: ${formatDateOnly(purchaseArrivedDate)}. Retirada liberada para o PCM.`,
+    purchaseApprovalRequestedAt: hasApprovalPendingAfterReceipt ? request.purchaseApprovalRequestedAt || now : request.purchaseApprovalRequestedAt || "",
+    response: hasApprovalPendingAfterReceipt
+      ? `Recebimento confirmado pelo Almoxarifado. Entrada SAP: ${receiptNumber}. Saldo pendente enviado para aprovação de compra.`
+      : hasApprovedPurchaseAfterReceipt
+      ? `Recebimento confirmado pelo Almoxarifado. Entrada SAP: ${receiptNumber}. Saldo aprovado aguardando pedido de compra.`
+      : `Recebimento confirmado pelo Almoxarifado. Entrada SAP: ${receiptNumber}. Data de chegada: ${formatDateOnly(purchaseArrivedDate)}. Retirada liberada para o PCM.`,
   };
 
   requests = requests.map((item) => (item.id === id ? updatedRequest : item));
@@ -1553,7 +1772,11 @@ function calculateStatus(items) {
 function calculateAlmoxStatus(items) {
   const requested = items.reduce((sum, item) => sum + (Number(item.quantity) || 0), 0);
   const available = items.reduce((sum, item) => sum + (Number(item.availableQty) || 0), 0);
+  const cdPending = items.reduce((sum, item) => sum + getCdPendingQty(item), 0);
+  const purchase = items.reduce((sum, item) => sum + getPurchasePendingQty(item), 0);
   if (available >= requested && requested > 0) return "atendimento";
+  if (cdPending > 0) return "cd";
+  if (purchase > 0) return "aprovacao";
   return "cd";
 }
 
@@ -1588,6 +1811,7 @@ function getPurchaseBaseQty(item) {
   const local = Number(item.availableQty) || 0;
   const cd = Number(item.cdQty) || 0;
   const purchase = Number(item.purchaseQty) || 0;
+  if (getCdPendingQty(item) > 0 && item.purchaseApproval !== "pending" && item.purchaseApproval !== "approved" && item.purchaseApproval !== "rejected") return purchase;
   return Math.max(purchase, quantity - local - cd);
 }
 
@@ -1598,6 +1822,55 @@ function getPurchasePendingQty(item) {
 
 function getPurchasePendingQtySum(request) {
   return request.items.reduce((sum, item) => sum + getPurchasePendingQty(item), 0);
+}
+
+function hasPurchaseApprovalPending(request) {
+  return Boolean(request?.items?.some((item) => getPurchaseBaseQty(item) > 0 && item.purchaseApproval !== "approved" && item.purchaseApproval !== "rejected"));
+}
+
+function hasApprovedPurchasePending(request) {
+  return Boolean(request?.items?.some((item) => getPurchasePendingQty(item) > 0 && item.purchaseApproval === "approved"));
+}
+
+function getTodayDateInputValue() {
+  const date = new Date();
+  date.setMinutes(date.getMinutes() - date.getTimezoneOffset());
+  return date.toISOString().slice(0, 10);
+}
+
+function isPurchaseArrivalRegistered(request) {
+  return Boolean(request?.purchaseArrivedAt || request?.purchaseArrivedDate);
+}
+
+function hasPurchasedItemWaitingReceipt(request) {
+  return Boolean(request?.items?.some((item) => item.purchaseApproval === "approved" && getPurchasePendingQty(item) > 0)) && isPurchaseArrivalRegistered(request);
+}
+
+function hasPurchaseReceipt(request) {
+  return Boolean(request?.items?.some((item) => (Number(item.purchaseReceivedQty) || 0) > 0));
+}
+
+function getReceiptPendingItems(request) {
+  if (!request) return [];
+  return request.items.filter((item) => {
+    const cdArrived = Number(item.cdQty) > 0;
+    const purchaseArrived = isPurchaseArrivalRegistered(request) && item.purchaseApproval === "approved" && getPurchasePendingQty(item) > 0;
+    return cdArrived || purchaseArrived;
+  });
+}
+
+function getDisplayStatus(request) {
+  if (!request) return "solicitacao";
+  const hasCdPending = request.items.some((item) => getCdPendingQty(item) > 0);
+  const hasPurchasePending = request.items.some((item) => getPurchasePendingQty(item) > 0);
+  const hasPendingApproval = hasPurchaseApprovalPending(request);
+  const hasCdReceipt = request.items.some((item) => Number(item.cdQty) > 0);
+  const hasReceiptPending = getReceiptPendingItems(request).length > 0;
+  if (request.status === "cd" && !hasCdPending && hasPendingApproval) return "aprovacao";
+  if (request.status === "cd" && !hasCdPending && hasPurchasePending) return "aprovacao";
+  if (request.status === "recebimento" && !hasReceiptPending && hasPurchasePending) return "compra";
+  if (request.status === "recebimento" || hasCdReceipt || hasReceiptPending) return "recebimento";
+  return request.status;
 }
 
 function getCdReceivedQtySum(request) {
@@ -1615,19 +1888,26 @@ function getPurchaseServedQty(item) {
 function getItemPurchaseStatus(request, item) {
   const need = getPurchaseBaseQty(item);
   if (need <= 0) return "Sem compra";
-  if (item.purchaseApproval === "approved") return request.status === "compra" ? "Aprovado para SAP" : "Compra aprovada";
+  if (item.purchaseApproval === "approved") {
+    if ((Number(item.purchaseReceivedQty) || 0) > 0) return "Recebido pelo Almoxarifado";
+    if (isPurchaseArrivalRegistered(request)) return "Pendente entrada e recebimento";
+    if (request.purchaseOrder) return request.deliveryDate ? "Pendente de chegada e recebimento" : "Pendente de data de chegada";
+    if (request.sapRequestNumber) return "Solicitação SAP aberta";
+    return "Aprovada para compra";
+  }
   if (item.purchaseApproval === "rejected") return "Não aprovado";
-  if (request.status === "aprovacao") return "Pendente aprovação";
+  if (request.status === "aprovacao" || getDisplayStatus(request) === "aprovacao") return "Pendente aprovação";
   return "Aguardando aprovação";
 }
 
 function getItemStageStatus(request, item) {
   if (isPendingRegistrationItem(item)) return "Aguardando cadastro SAP";
   if (getWithdrawnQty(item) >= (Number(item.quantity) || 0)) return "Retirado";
-  if (request.status === "recebimento" && ((Number(item.cdQty) || 0) > 0 || getPurchasePendingQty(item) > 0)) return "Pendente entrada e recebimento";
-  if (getPurchaseBaseQty(item) > 0) return getItemPurchaseStatus(request, item);
+  if (getDisplayStatus(request) === "recebimento" && (Number(item.cdQty) || 0) > 0) return "Pendente entrada e recebimento";
+  if (isPurchaseArrivalRegistered(request) && item.purchaseApproval === "approved" && getPurchasePendingQty(item) > 0) return "Pendente entrada e recebimento";
   if (getPickupReleasedQty(item) > 0) return "Liberado para retirada";
   if (request.status === "cd" && getCdPendingQty(item) > 0) return "Pendente CD";
+  if (getPurchaseBaseQty(item) > 0) return getItemPurchaseStatus(request, item);
   if (request.status === "solicitacao") return "Pendente Almox";
   return statusText[request.status] || "-";
 }
@@ -1638,7 +1918,7 @@ function getWithdrawnQty(item) {
 
 function getPickupReleasedQty(item) {
   const quantity = Number(item.quantity) || 0;
-  const released = (Number(item.availableQty) || 0) + (Number(item.cdQty) || 0);
+  const released = Number(item.availableQty) || 0;
   return Math.min(quantity, released);
 }
 
@@ -1648,7 +1928,6 @@ function isPickupItemPending(item) {
 
 function hasPickupPending(request) {
   if (!request.attendedAt) return false;
-  if (request.status !== "atendimento" && request.status !== "retirado") return false;
   return request.items.some(isPickupItemPending);
 }
 
@@ -1666,7 +1945,7 @@ function getQtyStepClass(request, item, step) {
   };
 
   if (step === "requested") return "done";
-  if (step === "withdrawn") return getWithdrawnQty(item) > 0 ? "done" : hasPickupPending(request) ? "active" : "idle";
+  if (step === "withdrawn") return getWithdrawnQty(item) > 0 ? "done" : isPickupItemPending(item) ? "active" : "idle";
   if (step === "almox" && request.status === "solicitacao") return valueByStep.almox > 0 ? "done" : "active";
   if (step === "almox" && request.attendedAt) return "done";
   if (step === "cd" && request.status === "cd") return getCdPendingQty(item) > 0 ? "active" : valueByStep.cd > 0 ? "done" : "idle";
@@ -1749,6 +2028,10 @@ function updateRequest(id, status, response) {
       answeredAt: status === "solicitacao" ? "" : request.answeredAt,
       cdAt: status === "solicitacao" ? "" : request.cdAt,
       purchaseOrder: status === "solicitacao" ? "" : request.purchaseOrder,
+      sapRequestNumber: status === "solicitacao" ? "" : request.sapRequestNumber,
+      sapRequestAt: status === "solicitacao" ? "" : request.sapRequestAt,
+      sapRequestBy: status === "solicitacao" ? "" : request.sapRequestBy,
+      buyerNote: status === "solicitacao" ? "" : request.buyerNote,
       deliveryDate: status === "solicitacao" ? "" : request.deliveryDate,
       purchaseArrivedDate: status === "solicitacao" ? "" : request.purchaseArrivedDate,
       receiptNumber: status === "solicitacao" ? "" : request.receiptNumber,
@@ -1825,12 +2108,14 @@ function renderHistory() {
   if (!historyList) return;
 
   const query = historyFilter.value.trim().toLowerCase();
+  const prefixQuery = historyPrefixFilter.value.trim().toLowerCase();
   const dateFrom = historyDateFrom.value;
   const dateTo = historyDateTo.value;
   const filtered = requests.filter((request) => {
     const matchesQuery = !query || request.items.some((item) => `${item.code} ${item.description}`.toLowerCase().includes(query));
+    const matchesPrefix = !prefixQuery || String(request.bus || "").toLowerCase().includes(prefixQuery);
     const matchesDate = isRequestInHistoryDateRange(request, dateFrom, dateTo);
-    return matchesQuery && matchesDate;
+    return matchesQuery && matchesPrefix && matchesDate;
   });
 
   updateHistorySla(filtered);
@@ -1839,21 +2124,22 @@ function renderHistory() {
   if (filtered.length === 0) {
     const empty = document.createElement("div");
     empty.className = "empty-state";
-    empty.textContent = "Nenhum histórico encontrado para esse filtro.";
+    empty.textContent = "Nenhum histórico encontrado para este filtro.";
     historyList.append(empty);
     return;
   }
 
   filtered.forEach((request) => {
+    const displayStatus = getDisplayStatus(request);
     const row = document.createElement("article");
     row.className = "history-row";
     row.innerHTML = `
       <button class="history-summary" type="button" aria-expanded="false">
         <div>
           <strong>${request.id}</strong>
-          <span>Prefixo ${request.bus} | ${request.items.length} item(ns) | ${request.priority}</span>
+          <span>${getRequestTargetLabel(request)} | ${formatItemCount(request.items.length)} | ${request.priority}</span>
         </div>
-        <div><small>Onde está</small><b>${statusText[request.status]}</b></div>
+        <div><small>Onde está</small><b>${statusText[displayStatus]}</b></div>
         <div><small>SLA atual</small><b>${getCurrentSla(request)}</b></div>
       </button>
       <div class="history-details">
@@ -1877,7 +2163,9 @@ function renderUsers() {
   const users = Object.entries(getAllAccounts()).map(([email, user]) => ({ ...user, email, defaultUser: Boolean(accounts[email]) }));
 
   userList.innerHTML = users
-    .map((user) => `<article class="user-row" data-email="${escapeAttr(user.email)}">
+    .map((user) => {
+      const feedback = userAccessFeedback?.email === user.email ? userAccessFeedback.message : "";
+      return `<article class="user-row" data-email="${escapeAttr(user.email)}">
       <div>
         <strong>${escapeHtml(user.name)}</strong>
         <span>${escapeHtml(user.email)}</span>
@@ -1896,13 +2184,29 @@ function renderUsers() {
         <small>Senha</small>
         <input class="user-password" type="text" value="${escapeAttr(user.password)}" />
       </label>
-      <div><small>Tipo</small><b>${user.defaultUser ? "Padrao" : "Criado"}</b></div>
+      <div><small>Tipo</small><b>${user.defaultUser ? "Padrão" : "Criado"}</b></div>
       <div class="user-actions">
-        <button class="secondary-action compact" type="button" data-user-action="save-password">Salvar acesso</button>
+        <button class="secondary-action compact" type="button" data-user-action="save-password">Gravar acesso</button>
         <button class="danger-action compact" type="button" data-user-action="delete-user" ${user.email === currentUser.email ? "disabled" : ""}>Excluir</button>
+        <span class="user-save-status ${feedback ? "success" : ""}" aria-live="polite">${escapeHtml(feedback)}</span>
       </div>
-    </article>`)
+    </article>`;
+    })
     .join("");
+}
+
+function markUserRowChanged(target) {
+  if (!target?.matches?.(".user-password, .user-role, .user-corporate-email")) return;
+  const row = target.closest(".user-row");
+  if (!row) return;
+  row.classList.add("is-dirty");
+  const button = row.querySelector("[data-user-action='save-password']");
+  const status = row.querySelector(".user-save-status");
+  if (button) button.textContent = "Gravar alterações";
+  if (status) {
+    status.textContent = "Alteração pendente.";
+    status.classList.remove("success");
+  }
 }
 
 function isPendingRegistrationItem(item) {
@@ -1941,7 +2245,7 @@ function createPartRegistration(data) {
   if (alreadyPending) {
     const pending = partRegistrations.find((item) => item.status === "pending" && item.description.toLowerCase() === description.toLowerCase() && item.originalCode.toLowerCase() === originalCode.toLowerCase());
     linkPendingRegistrationToInput(pending, getPartRegistrationTargetInput());
-    partRegistrationMessage.textContent = "Esse cadastro já está pendente para o admin e foi vinculado à solicitação.";
+    partRegistrationMessage.textContent = "Este cadastro já está pendente para o admin e foi vinculado à solicitação.";
     partRegistrationMessage.className = "password-message success";
     setTimeout(() => partRegistrationDialog.close(), 450);
     return;
@@ -2145,7 +2449,7 @@ function updateUserAccess(email, password, role, corporateEmail = "") {
   const updatedUser = {
     ...account,
     email,
-    corporateEmail: String(corporateEmail || account.corporateEmail || "").trim().toLowerCase() || defaultCorporateEmail(email),
+    corporateEmail: normalizeCorporateEmail(corporateEmail || account.corporateEmail, email),
     password: String(password || "").trim() || "1234",
     role,
     label: roleLabel(role),
@@ -2251,19 +2555,20 @@ function getAreaSla(request, area) {
     return end ? formatDuration(request.attendedAt, end) : "-";
   }
   if (area === "aprovacao") {
-    if (!request.cdAt) return "-";
+    const start = request.cdAt || request.attendedAt;
+    if (!start) return "-";
     const end = request.purchaseAt || (request.status === "reprovado" ? request.purchaseApprovedAt : "") || (request.status === "aprovacao" ? now : "");
-    return end ? formatDuration(request.cdAt, end) : "-";
+    return end ? formatDuration(start, end) : "-";
   }
   if (area === "compra") {
     if (!request.purchaseAt) return "-";
-    const end = request.deliveryDate ? request.receiptAt || (request.status === "recebimento" ? now : "") : request.purchaseAt;
+    const end = request.purchaseArrivedAt || (hasApprovedPurchasePending(request) || getDisplayStatus(request) === "compra" ? now : request.purchaseAt);
     return end ? formatDuration(request.purchaseAt, end) : "-";
   }
   if (area === "recebimento") {
-    const start = request.deliveryDate ? `${request.deliveryDate}T00:00:00` : request.cdAt || request.purchaseAt;
+    const start = request.purchaseArrivedAt || request.cdAt || request.purchaseAt;
     if (!start) return "-";
-    const end = request.receiptAt || (request.status === "recebimento" ? now : "");
+    const end = request.receiptAt || (getDisplayStatus(request) === "recebimento" ? now : "");
     return end ? formatDuration(start, end) : "-";
   }
   return "-";
@@ -2274,12 +2579,13 @@ function getCurrentSla(request) {
 }
 
 function createHistorySlaMap(request) {
+  const displayStatus = getDisplayStatus(request);
   const steps = [
-    { key: "almox", label: "Almoxarifado", owner: request.almoxBy || "Pendente", active: request.status === "solicitacao", done: Boolean(request.attendedAt) },
-    { key: "cd", label: "CD", owner: request.cdBy || "Pendente", active: request.status === "cd", done: Boolean(request.cdAt) },
-    { key: "aprovacao", label: "Aprovação", owner: request.purchaseApprovedBy || "Gerente", active: request.status === "aprovacao", done: Boolean(request.purchaseAt) || request.status === "reprovado" },
-    { key: "compra", label: "Compra", owner: request.purchaseOrder || "Pedido pendente", active: request.status === "compra", done: Boolean(request.purchaseOrder) },
-    { key: "recebimento", label: "Recebimento", owner: request.receiptNumber || "Pendente entrada SAP", active: request.status === "recebimento", done: Boolean(request.receiptAt) },
+    { key: "almox", label: "Almoxarifado", owner: request.almoxBy || "Pendente", active: displayStatus === "solicitacao", done: Boolean(request.attendedAt) },
+    { key: "cd", label: "CD", owner: request.cdBy || "Pendente", active: displayStatus === "cd", done: Boolean(request.cdAt) },
+    { key: "aprovacao", label: "Aprovação", owner: request.purchaseApprovedBy || "Gerente", active: displayStatus === "aprovacao", done: Boolean(request.purchaseAt) || request.status === "reprovado" },
+    { key: "compra", label: "Compra", owner: request.purchaseOrder || request.sapRequestNumber || "Pedido pendente", active: displayStatus === "compra", done: Boolean(request.purchaseArrivedAt || hasPurchaseReceipt(request)) },
+    { key: "recebimento", label: "Recebimento", owner: request.receiptNumber || "Pendente entrada SAP", active: displayStatus === "recebimento", done: Boolean(request.receiptAt) },
   ];
 
   return steps
@@ -2292,6 +2598,7 @@ function createHistorySlaMap(request) {
 }
 
 function createHistoryTimeline(request) {
+  const displayStatus = getDisplayStatus(request);
   const steps = [
     {
       label: "Solicitação",
@@ -2303,43 +2610,55 @@ function createHistoryTimeline(request) {
     },
     {
       label: "Almoxarifado",
-      status: request.attendedAt ? "Atendido" : request.status === "solicitacao" ? "Pendente" : "Não passou",
+      status: request.attendedAt ? "Atendido" : displayStatus === "solicitacao" ? "Pendente" : "Não passou",
       owner: request.almoxBy || "-",
       date: request.attendedAt,
       sla: getAreaSla(request, "almox"),
-      state: request.attendedAt ? "done" : request.status === "solicitacao" ? "active" : "idle",
+      state: request.attendedAt ? "done" : displayStatus === "solicitacao" ? "active" : "idle",
     },
     {
       label: "CD",
-      status: request.cdAt ? "Atendido" : request.status === "cd" ? "Pendente" : "Não acionado",
+      status: request.cdAt ? "Atendido" : displayStatus === "cd" ? "Pendente" : "Não acionado",
       owner: request.cdBy || "-",
       date: request.cdAt,
       sla: getAreaSla(request, "cd"),
-      state: request.cdAt ? "done" : request.status === "cd" ? "active" : "idle",
+      state: request.cdAt ? "done" : displayStatus === "cd" ? "active" : "idle",
     },
     {
       label: "Aprovação",
-      status: request.status === "reprovado" ? "Compra não aprovada" : request.purchaseAt ? "Compra aprovada" : request.status === "aprovacao" ? "Pendente aprovação" : "Não acionada",
+      status: request.status === "reprovado" ? "Compra não aprovada" : request.purchaseAt ? "Compra aprovada" : displayStatus === "aprovacao" ? "Pendente aprovação" : "Não acionada",
       owner: request.purchaseApprovedBy || "Gerente",
       date: request.purchaseAt || request.purchaseApprovedAt,
       sla: getAreaSla(request, "aprovacao"),
-      state: request.purchaseAt || request.status === "reprovado" ? "done" : request.status === "aprovacao" ? "active" : "idle",
+      state: request.purchaseAt || request.status === "reprovado" ? "done" : displayStatus === "aprovacao" ? "active" : "idle",
     },
     {
       label: "Compra",
-      status: request.purchaseAt ? request.deliveryDate ? "Pedido registrado" : "Pendente data de chegada" : "Não acionada",
-      owner: request.purchaseOrder ? `Pedido ${request.purchaseOrder}` : "-",
+      status: request.purchaseAt
+        ? hasPurchaseReceipt(request)
+          ? "Compra recebida"
+          : request.purchaseArrivedAt
+          ? "Compra entregue ao Almoxarifado"
+          : request.purchaseOrder
+          ? request.deliveryDate
+            ? "Pendente de chegada e recebimento"
+            : "Pendente de data de chegada"
+          : request.sapRequestNumber
+          ? "Solicitação SAP aberta"
+          : "Aguardando solicitação SAP"
+        : "Não acionada",
+      owner: request.purchaseOrder ? `Pedido ${request.purchaseOrder}` : request.sapRequestNumber ? `SAP ${request.sapRequestNumber}` : "-",
       date: request.purchaseAt,
       sla: getAreaSla(request, "compra"),
-      state: request.purchaseAt ? request.status === "compra" ? "active" : "done" : "idle",
+      state: request.purchaseAt ? request.purchaseArrivedAt || hasPurchaseReceipt(request) ? "done" : "active" : "idle",
     },
     {
       label: "Recebimento",
-      status: request.receiptAt ? "Entrada SAP confirmada" : request.status === "recebimento" ? "Pendente entrada e recebimento" : "Aguardando",
+      status: request.receiptAt ? "Entrada SAP confirmada" : displayStatus === "recebimento" ? "Pendente entrada e recebimento" : "Não solicitado",
       owner: request.receiptBy || request.almoxBy || "-",
       date: request.receiptAt,
       sla: getAreaSla(request, "recebimento"),
-      state: request.receiptAt ? "done" : request.status === "recebimento" ? "active" : "idle",
+      state: request.receiptAt ? "done" : displayStatus === "recebimento" ? "active" : "idle",
     },
     {
       label: "Retirada",
@@ -2408,7 +2727,7 @@ function getItemInvoiceMarkup(request, item, type) {
 
 function getItemReceiptMarkup(request, item) {
   if (!request.receiptNumber) return "-";
-  if ((Number(item.purchaseReceivedQty) || 0) > 0 || (Number(item.cdReceivedQty) || 0) > 0 || getPurchasePendingQty(item) > 0 || Number(item.cdQty) > 0) return request.receiptNumber;
+  if ((Number(item.purchaseReceivedQty) || 0) > 0 || (Number(item.cdReceivedQty) || 0) > 0) return request.receiptNumber;
   return "-";
 }
 
@@ -2418,8 +2737,10 @@ function createPurchaseItemDetails(request, items) {
       <strong>${item.code}</strong>
       <span>${item.description}</span>
       <b>${getPurchasePendingQty(item)}</b>
+      <b>${request.sapRequestNumber || "-"}</b>
       <b>${request.purchaseOrder || "-"}</b>
       <b>${request.deliveryDate ? formatDateOnly(request.deliveryDate) : "-"}</b>
+      <b>${request.purchaseArrivedDate ? formatDateOnly(request.purchaseArrivedDate) : "-"}</b>
       <b>${getAreaSla(request, "compra")}</b>
     </div>`)
     .join("");
@@ -2429,8 +2750,10 @@ function createPurchaseItemDetails(request, items) {
       <span>Código</span>
       <span>Descrição</span>
       <span>Compra</span>
+      <span>Solicitação SAP</span>
       <span>Pedido compra</span>
-      <span>Data chegada</span>
+      <span>Previsão</span>
+      <span>Chegada real</span>
       <span>SLA compra</span>
     </div>
     ${rows}
@@ -2472,10 +2795,10 @@ function renderApprovalQueue() {
   if (!approvalList) return;
 
   const approvalRequests = requests
-    .filter((request) => request.status === "aprovacao")
+    .filter(hasPurchaseApprovalPending)
     .map((request) => ({
       request,
-      items: request.items.filter((item) => getPurchaseBaseQty(item) > 0 && item.purchaseApproval !== "rejected"),
+      items: request.items.filter((item) => getPurchaseBaseQty(item) > 0 && item.purchaseApproval !== "approved" && item.purchaseApproval !== "rejected"),
     }))
     .filter(({ items }) => items.length > 0);
 
@@ -2494,9 +2817,9 @@ function renderApprovalQueue() {
       <button class="history-summary" type="button" aria-expanded="false">
         <div>
           <strong>${request.id}</strong>
-          <span>Prefixo ${request.bus} | ${items.length} item(ns) aguardando aprovação</span>
+          <span>${getRequestTargetLabel(request)} | ${formatItemCount(items.length)} aguardando aprovação</span>
         </div>
-        <div><small>Onde está</small><b>${statusText[request.status]}</b></div>
+        <div><small>Onde está</small><b>${statusText.aprovacao}</b></div>
         <div><small>SLA total</small><b>${getCurrentSla(request)}</b></div>
       </button>
       <div class="history-details">
@@ -2558,7 +2881,8 @@ function approvePurchase(id, mode = "all", selectedCodes = []) {
     });
     const approvedQty = items.reduce((sum, item) => sum + (item.purchaseApproval === "approved" ? getPurchasePendingQty(item) : 0), 0);
     const rejectedQty = items.reduce((sum, item) => sum + (item.purchaseApproval === "rejected" ? getPurchaseBaseQty(item) : 0), 0);
-    const nextStatus = approvedQty > 0 ? "compra" : hasPickupPending({ ...request, items }) ? "atendimento" : "reprovado";
+    const hasCdReceiptPending = items.some((item) => Number(item.cdQty) > 0);
+    const nextStatus = approvedQty > 0 ? hasCdReceiptPending ? "recebimento" : "compra" : hasPickupPending({ ...request, items }) ? "atendimento" : "reprovado";
     approvedRequest = {
       ...request,
       items,
@@ -2567,7 +2891,7 @@ function approvePurchase(id, mode = "all", selectedCodes = []) {
       purchaseApprovedAt: now,
       purchaseApprovedBy: currentUser.name || currentUser.label,
       response: approvedQty > 0
-        ? `Compra aprovada pelo Gerente. ${approvedQty} unidade(s) liberada(s) para abertura do pedido SAP${rejectedQty > 0 ? ` e ${rejectedQty} unidade(s) não aprovada(s)` : ""}.`
+        ? `Compra aprovada pelo Gerente. ${approvedQty} unidade(s) liberada(s) para abertura da solicitação SAP${rejectedQty > 0 ? ` e ${rejectedQty} unidade(s) não aprovada(s)` : ""}.`
         : "Compra não aprovada pelo Gerente. Sem itens liberados para SAP.",
     };
     return approvedRequest;
@@ -2580,28 +2904,29 @@ function approvePurchase(id, mode = "all", selectedCodes = []) {
 
 function renderPurchaseOverview() {
   const purchaseRequests = requests
-    .filter((request) => request.status === "compra")
+    .filter((request) => !isPurchaseArrivalRegistered(request) && (request.status === "compra" || hasApprovedPurchasePending(request)))
     .map((request) => ({
       request,
-      items: request.items.filter((item) => getPurchasePendingQty(item) > 0),
+      items: request.items.filter((item) => getPurchasePendingQty(item) > 0 && item.purchaseApproval === "approved"),
     }))
     .filter(({ items }) => items.length > 0);
 
   purchaseOverviewList.innerHTML = "";
 
   if (purchaseRequests.length === 0) {
-    purchaseOverviewList.innerHTML = '<div class="empty-state">Nenhum item pendente em compra.</div>';
+    purchaseOverviewList.innerHTML = '<div class="empty-state">Nenhum item pendente de compra.</div>';
     return;
   }
 
   purchaseRequests.forEach(({ request, items }) => {
     const row = document.createElement("article");
     row.className = "history-row purchase-request-row";
+    const purchaseReceived = items.some((item) => (Number(item.purchaseReceivedQty) || 0) > 0);
     row.innerHTML = `
       <button class="history-summary" type="button" aria-expanded="false">
         <div>
           <strong>${request.id}</strong>
-          <span>Prefixo ${request.bus} | ${items.length} item(ns) pendente(s) em compra</span>
+          <span>${getRequestTargetLabel(request)} | ${formatItemCount(items.length)} pendente(s) de compra</span>
         </div>
         <div><small>Solicitação</small><b>${request.id}</b></div>
         <div><small>SLA total</small><b>${getCurrentSla(request)}</b></div>
@@ -2612,22 +2937,33 @@ function renderPurchaseOverview() {
         </div>
         <div class="history-meta history-dates">
           <div><small>Envio para compra</small><b>${formatDateOrDash(request.purchaseAt)}</b></div>
-          <div><small>Data de chegada</small><b>${request.deliveryDate ? formatDateOnly(request.deliveryDate) : "-"}</b></div>
-          <div><small>Recebimento Almox</small><b>${formatDateOrDash(request.receiptAt)}</b></div>
+          <div><small>Solicitação SAP</small><b>${request.sapRequestNumber || "-"}</b></div>
+          <div><small>Previsão de entrega</small><b>${request.deliveryDate ? formatDateOnly(request.deliveryDate) : "-"}</b></div>
+          <div><small>Chegada real</small><b>${request.purchaseArrivedDate ? formatDateOnly(request.purchaseArrivedDate) : "-"}</b></div>
+          <div><small>Recebimento Almox</small><b>${purchaseReceived ? formatDateOrDash(request.receiptAt) : "-"}</b></div>
           <div><small>Pedido de compra</small><b>${request.purchaseOrder || "-"}</b></div>
-          <div><small>Entrada SAP</small><b>${request.receiptNumber || "-"}</b></div>
+          <div><small>Entrada SAP</small><b>${purchaseReceived ? request.receiptNumber || "-" : "-"}</b></div>
+          <div><small>Observação de compras</small><b>${request.buyerNote || "-"}</b></div>
         </div>
         ${currentUser.role === "compras" ? `
           <div class="purchase-delivery-editor">
             <label>
-              Número do pedido de compra
-              <input class="purchase-overview-order" type="text" value="${request.purchaseOrder || ""}" placeholder="Ex.: 4500123456" ${request.purchaseOrder ? "readonly" : ""} />
+              Solicitação SAP
+              <input class="purchase-overview-sap" type="text" value="${request.sapRequestNumber || "Aguardando Almoxarifado"}" readonly />
             </label>
             <label>
-              Data de chegada
-              <input class="purchase-overview-delivery" type="date" value="${request.deliveryDate || ""}" />
+              Número do pedido de compra
+              <input class="purchase-overview-order" type="text" value="${request.purchaseOrder || ""}" placeholder="Ex.: 4500123456" ${request.purchaseOrder ? "readonly" : ""} ${request.sapRequestNumber ? "" : "disabled"} />
             </label>
-            <button class="action available purchase-overview-save" type="button">Salvar compra</button>
+            <label>
+              Previsão de entrega
+              <input class="purchase-overview-delivery" type="date" value="${request.deliveryDate || ""}" ${request.sapRequestNumber ? "" : "disabled"} />
+            </label>
+            <label class="purchase-note-label">
+              Observação de Compras
+              <textarea class="purchase-overview-note" rows="3" ${request.sapRequestNumber ? "" : "disabled"}>${request.buyerNote || ""}</textarea>
+            </label>
+            <button class="action available purchase-overview-save" type="button" ${request.sapRequestNumber ? "" : "disabled"}>Salvar compra</button>
           </div>
         ` : ""}
       </div>
@@ -2639,13 +2975,13 @@ function renderPurchaseOverview() {
     });
     const saveDeliveryButton = row.querySelector(".purchase-overview-save");
     if (saveDeliveryButton) {
-      saveDeliveryButton.addEventListener("click", () => savePurchaseDelivery(request.id, row.querySelector(".purchase-overview-order").value, row.querySelector(".purchase-overview-delivery").value));
+      saveDeliveryButton.addEventListener("click", () => savePurchaseDelivery(request.id, row.querySelector(".purchase-overview-order").value, row.querySelector(".purchase-overview-delivery").value, row.querySelector(".purchase-overview-note").value));
     }
     purchaseOverviewList.append(row);
   });
 }
 
-function savePurchaseDelivery(id, purchaseOrder, deliveryDate) {
+function savePurchaseDelivery(id, purchaseOrder, deliveryDate, buyerNote = "") {
   if (currentUser.role !== "compras") return;
   const cleanOrder = String(purchaseOrder || "").trim();
   if (!cleanOrder) {
@@ -2654,20 +2990,25 @@ function savePurchaseDelivery(id, purchaseOrder, deliveryDate) {
   }
   requests = requests.map((request) => {
     if (request.id !== id) return request;
-    const nextStatus = cleanOrder && deliveryDate ? "recebimento" : "compra";
+    if (!request.sapRequestNumber) {
+      window.alert("Aguardando o Almoxarifado informar a solicitação SAP.");
+      return request;
+    }
+    const hasCdReceiptPending = request.items.some((item) => Number(item.cdQty) > 0);
+    const nextStatus = hasCdReceiptPending ? "recebimento" : "compra";
     return {
       ...request,
       purchaseOrder: request.purchaseOrder || cleanOrder,
       deliveryDate,
-      purchaseArrivedDate: deliveryDate || request.purchaseArrivedDate || "",
+      buyerNote: String(buyerNote || "").trim(),
       status: nextStatus,
       response: deliveryDate
-        ? `Pedido de compra ${request.purchaseOrder || cleanOrder} registrado pelo time de Compras. Data de chegada: ${formatDateOnly(deliveryDate)}. Pendente entrada e recebimento pelo Almoxarifado.`
-        : `Pedido de compra ${request.purchaseOrder || cleanOrder} registrado pelo time de Compras. Pendente data de chegada.`,
+        ? `Pedido de compra ${request.purchaseOrder || cleanOrder} registrado pelo time de Compras. Previsão de entrega: ${formatDateOnly(deliveryDate)}. Aguardando chegada.`
+        : `Pedido de compra ${request.purchaseOrder || cleanOrder} registrado pelo time de Compras. Pendente de data de chegada.`,
     };
   });
   saveRequests();
-  renderPurchaseOverview();
+  render();
 }
 
 function isRequestInHistoryDateRange(request, dateFrom, dateTo) {
@@ -2774,13 +3115,14 @@ function openMailDraft(to, subject, bodyText) {
 }
 
 function buildEmailSubject(request, step) {
-  return `[ManuPe\u00e7as ${request.id}] Prefixo ${request.bus} - ${step}`;
+  return `[ManuPe\u00e7as ${request.id}] ${getRequestTargetLabel(request)} - ${step}`;
 }
 
 function openEmailDraft(request, to) {
   const subject = buildEmailSubject(request, "Solicita\u00e7\u00e3o");
-  const bodyText = buildEmailBody("Solicitação de Peças", `Nova solicitação registrada para o prefixo ${request.bus}.`, [
-    { title: "Dados da Solicitação", content: `Solicitação: ${request.id}\nSolicitante: ${request.requestedBy}\nPrefixo: ${request.bus}\nPrioridade: ${request.priority}` },
+  const targetLabel = getRequestTargetLabel(request);
+  const bodyText = buildEmailBody("Solicitação de Peças", `Nova solicitação registrada para ${targetLabel.toLowerCase()}.`, [
+    { title: "Dados da Solicitação", content: `Solicitação: ${request.id}\nSolicitante: ${request.requestedBy}\nManutentor: ${request.maintainer || "-"}\nAplicação: ${targetLabel}\nPrioridade: ${request.priority}` },
     { title: "Peças", content: formatEmailItems(request.items, (item) => item.quantity) },
     { title: "Motivo", content: request.reason },
   ]);
@@ -2794,8 +3136,9 @@ function openPartRegistrationEmailDraft(request) {
 
   const recipients = userLoginToEmail("erik.barreto");
   const subject = buildEmailSubject(request, "Cadastro de item");
+  const targetLabel = getRequestTargetLabel(request);
   const bodyText = buildEmailBody("Solicitação de Cadastro de Item", `Existem itens sem cadastro SAP na solicitação ${request.id}. Cadastre no SAP e informe código e descrição final na aba Cadastro de Item para liberar o Almoxarifado.`, [
-    { title: "Dados da Solicitação", content: `Solicitação: ${request.id}\nSolicitante: ${request.requestedBy}\nPrefixo: ${request.bus}\nPrioridade: ${request.priority}\nData: ${formatDate(request.createdAt)}` },
+    { title: "Dados da Solicitação", content: `Solicitação: ${request.id}\nSolicitante: ${request.requestedBy}\nManutentor: ${request.maintainer || "-"}\nAplicação: ${targetLabel}\nPrioridade: ${request.priority}\nData: ${formatDate(request.createdAt)}` },
     { title: "Itens para Cadastro", content: formatEmailItems(pendingItems, (item) => item.quantity, (item) => [
       `CÓDIGO ORIGINAL: ${item.pendingOriginalCode || "-"}`,
       `STATUS: Aguardando cadastro SAP`,
@@ -2811,8 +3154,8 @@ function openPartRegistrationEmailDraft(request) {
 
 function openAlmoxEmailDraft(request, to) {
   const subject = buildEmailSubject(request, "Atendimento Almox");
-  const bodyText = buildEmailBody("Relatório de Atendimento - Almoxarifado", `Segue retorno da solicitação ${request.id}, prefixo ${request.bus}.`, [
-    { title: "Resumo da Solicitação", content: `Status: ${statusText[request.status]}\nPrioridade: ${request.priority}\nRequisitante: ${request.requestedBy || "-"}` },
+  const bodyText = buildEmailBody("Relatório de Atendimento - Almoxarifado", `Segue retorno da solicitação ${request.id}, ${getRequestTargetLabel(request).toLowerCase()}.`, [
+    { title: "Resumo da Solicitação", content: `Status: ${statusText[request.status]}\nPrioridade: ${request.priority}\nRequisitante: ${request.requestedBy || "-"}\nManutentor: ${request.maintainer || "-"}` },
     { title: "Itens", content: formatEmailItems(request.items, (item) => item.quantity, (item) => {
       const pending = Math.max(0, item.quantity - (Number(item.availableQty) || 0) - (Number(item.cdQty) || 0) - getPurchasePendingQty(item));
       return [
@@ -2831,7 +3174,7 @@ function openAlmoxEmailDraft(request, to) {
 function openCdEmailDraft(request, to) {
   const subject = buildEmailSubject(request, "Atendimento CD");
   const cdItems = request.items.filter((item) => getCdPendingQty(item) > 0 || Number(item.cdQty) > 0 || getPurchasePendingQty(item) > 0);
-  const bodyText = buildEmailBody("Relatório de Atendimento - Centro de Distribuição", `Segue retorno do CD para a solicitação ${request.id}, prefixo ${request.bus}.`, [
+  const bodyText = buildEmailBody("Relatório de Atendimento - Centro de Distribuição", `Segue retorno do CD para a solicitação ${request.id}, ${getRequestTargetLabel(request).toLowerCase()}.`, [
     { title: "Resumo da Transferência", content: `Atendido por: ${request.cdBy || "CD"}\nNF de transferência: ${request.transferInvoiceName || "Não informada"}\nObservação: ${request.response || "Sem observação."}` },
     { title: "Itens", content: cdItems.length ? formatEmailItems(cdItems, (item) => Math.max(Number(item.cdQty) || 0, getCdPendingQty(item)), (item) => [
       `PENDENTE CD: ${getCdPendingQty(item)} UNIDADES`,
@@ -2847,7 +3190,7 @@ function openCdEmailDraft(request, to) {
 function openApprovalEmailDraft(request, to) {
   const subject = buildEmailSubject(request, "Aprova\u00e7\u00e3o de compra");
   const purchaseItems = request.items.filter((item) => getPurchaseBaseQty(item) > 0);
-  const bodyText = buildEmailBody("Relatório de Aprovação de Compra", `Segue retorno da aprovação de compra da solicitação ${request.id}, prefixo ${request.bus}.`, [
+  const bodyText = buildEmailBody("Relatório de Aprovação de Compra", `Segue retorno da aprovação de compra da solicitação ${request.id}, ${getRequestTargetLabel(request).toLowerCase()}.`, [
     { title: "Resumo da Aprovação", content: `Aprovado por: ${request.purchaseApprovedBy || "Gerente"}\nData: ${formatDateOrDash(request.purchaseApprovedAt)}\nStatus atual: ${statusText[request.status]}` },
     { title: "Itens", content: purchaseItems.length ? formatEmailItems(purchaseItems, (item) => getPurchaseBaseQty(item), (item) => [
       `STATUS: ${getItemPurchaseStatus(request, item)}`,
@@ -2861,11 +3204,12 @@ function openApprovalEmailDraft(request, to) {
 function openPurchaseEmailDraft(request, to) {
   const subject = buildEmailSubject(request, "Compra");
   const pendingItems = request.items.filter((item) => getPurchasePendingQty(item) > 0);
-  const bodyText = buildEmailBody("Relatório de Compra", `Segue registro de compra para a solicitação ${request.id}, prefixo ${request.bus}.`, [
-    { title: "Dados da Compra", content: `Solicitação: ${request.id}\nPedido de compra: ${request.purchaseOrder || "-"}\nData de chegada: ${request.deliveryDate ? formatDateOnly(request.deliveryDate) : "Pendente"}\nStatus: ${statusText[request.status]}` },
+  const bodyText = buildEmailBody("Relatório de Compra", `Segue registro de compra para a solicitação ${request.id}, ${getRequestTargetLabel(request).toLowerCase()}.`, [
+    { title: "Dados da Compra", content: `Solicitação: ${request.id}\nSolicitação SAP: ${request.sapRequestNumber || "-"}\nPedido de compra: ${request.purchaseOrder || "-"}\nPrevisão de entrega: ${request.deliveryDate ? formatDateOnly(request.deliveryDate) : "Pendente"}\nObservação de Compras: ${request.buyerNote || "-"}\nStatus: ${statusText[getDisplayStatus(request)]}` },
     { title: "Itens", content: pendingItems.length ? formatEmailItems(pendingItems, (item) => getPurchasePendingQty(item), () => [
+      `SOLICITAÇÃO SAP: ${request.sapRequestNumber || "-"}`,
       `PEDIDO DE COMPRA: ${request.purchaseOrder || "-"}`,
-      `DATA DE CHEGADA: ${request.deliveryDate ? formatDateOnly(request.deliveryDate) : "Pendente"}`,
+      `PREVISÃO DE ENTREGA: ${request.deliveryDate ? formatDateOnly(request.deliveryDate) : "Pendente"}`,
     ]) : "Nenhum item pendente de compra." },
   ]);
 
@@ -2873,24 +3217,36 @@ function openPurchaseEmailDraft(request, to) {
 }
 
 function createProcessMap(request) {
+  const registrationInfo = getRegistrationStepInfo(request);
   const steps = [
-    { key: "solicitacao", label: "Solicitação", date: request.createdAt, done: Boolean(request.createdAt), active: false },
-    { key: "cadastro", label: "Cadastro SAP", date: "", done: request.status !== "cadastro" && !request.items.some(isPendingRegistrationItem), active: request.status === "cadastro" },
-    { key: "atendimento", label: "Almoxarifado", date: request.attendedAt, done: Boolean(request.attendedAt), active: request.status === "solicitacao" },
-    { key: "cd", label: "CD", date: request.cdAt, done: Boolean(request.cdAt), active: request.status === "cd" },
-    { key: "aprovacao", label: "Aprovação", date: request.purchaseApprovedAt, done: Boolean(request.purchaseAt) || request.status === "reprovado", active: request.status === "aprovacao" },
-    { key: "compra", label: "Compra", date: request.purchaseAt, done: Boolean(request.purchaseOrder), active: request.status === "compra" },
-    { key: "recebimento", label: "Recebimento", date: request.receiptAt, done: Boolean(request.receiptAt), active: request.status === "recebimento" },
-    { key: "retirado", label: "Retirada", date: request.withdrawnAt, done: request.status === "retirado", active: request.status === "atendimento" },
+    { key: "solicitacao", label: "Solicitação", date: request.createdAt, done: Boolean(request.createdAt), active: false, requested: true },
+    { key: "cadastro", label: "Cadastro SAP", date: registrationInfo.date, done: registrationInfo.done, active: request.status === "cadastro", requested: registrationInfo.requested },
+    { key: "atendimento", label: "Almoxarifado", date: request.attendedAt, done: Boolean(request.attendedAt), active: request.status === "solicitacao", requested: true },
+    { key: "cd", label: "CD", date: request.cdAt, done: Boolean(request.cdAt), active: request.status === "cd", requested: Boolean(request.cdAt) || request.status === "cd" || request.items.some((item) => getCdPendingQty(item) > 0 || Number(item.cdQty) > 0) },
+    { key: "aprovacao", label: "Aprovação", date: request.purchaseApprovedAt, done: Boolean(request.purchaseApprovedAt) || request.status === "reprovado", active: hasPurchaseApprovalPending(request), requested: Boolean(request.purchaseApprovalRequestedAt || request.purchaseApprovedAt) || hasPurchaseApprovalPending(request) },
+    { key: "compra", label: "Compra", date: request.purchaseAt, done: Boolean(request.purchaseArrivedAt || hasPurchaseReceipt(request)), active: getDisplayStatus(request) === "compra", requested: Boolean(request.purchaseAt || request.purchaseOrder || request.sapRequestNumber) || hasApprovedPurchasePending(request) },
+    { key: "recebimento", label: "Recebimento", date: request.receiptAt, done: Boolean(request.receiptAt), active: getDisplayStatus(request) === "recebimento", requested: Boolean(request.receiptAt) || getDisplayStatus(request) === "recebimento" },
+    { key: "retirado", label: "Retirada", date: request.withdrawnAt, done: request.status === "retirado", active: hasPickupPending(request), requested: Boolean(request.withdrawnAt) || hasPickupPending(request) },
   ];
   return steps
     .map((step) => {
       const active = step.active;
       const done = step.done;
-      const meta = step.date ? `${formatDate(step.date)} | ${formatDuration(request.createdAt, step.date)}` : "Aguardando";
+      const meta = step.date ? `${formatDate(step.date)} | ${formatDuration(request.createdAt, step.date)}` : step.requested ? "Aguardando" : "Não solicitado";
       return `<div class="process-step ${active ? "active" : ""} ${done ? "done" : ""}"><strong>${step.label}</strong><span>${meta}</span></div>`;
     })
     .join("");
+}
+
+function getRegistrationStepInfo(request) {
+  const linked = partRegistrations.filter((item) => item.linkedRequestId === request.id);
+  const hasPendingItem = request.items.some(isPendingRegistrationItem);
+  const doneRegistration = linked.find((item) => item.status === "done" && item.completedAt);
+  return {
+    requested: hasPendingItem || linked.length > 0,
+    done: !hasPendingItem && linked.some((item) => item.status === "done"),
+    date: doneRegistration?.completedAt || "",
+  };
 }
 
 function formatDuration(start, end) {
