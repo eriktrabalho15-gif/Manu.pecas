@@ -974,7 +974,7 @@ async function mirrorRequestsToStructuredTables(rows) {
       motivo: request.reason || "",
       solicitante: request.requestedBy || "",
       manutentor: request.maintainer || "",
-      status_atual: statusText[getDisplayStatus(request)] || request.status || "",
+      status_atual: getRequestStatusText(request),
       criado_em: request.createdAt || new Date().toISOString(),
     }));
 
@@ -1494,7 +1494,7 @@ function render() {
       return request.status === "atendimento" || hasPickupPending(request);
     }
     if (currentUser.role === "almox" && currentFilter === "compra") {
-      return request.status === "aprovacao" || request.status === "compra" || request.status === "recebimento";
+      return request.status === "compra" || hasApprovedPurchasePending(request);
     }
     if (currentFilter === "solicitacao") return request.status === "solicitacao" || request.status === "cadastro";
     return request.status === currentFilter;
@@ -1515,7 +1515,15 @@ function createCard(request) {
   const card = requestTemplate.content.firstElementChild.cloneNode(true);
   const pickupMode = currentUser.role === "almox" && currentFilter === "atendimento" && hasPickupPending(request);
   const pickupOnlyView = currentFilter === "atendimento" && (currentUser.role === "almox" || currentUser.role === "pcm") && hasPickupPending(request);
-  const displayItems = pickupOnlyView ? request.items.filter(isPickupItemPending) : request.items;
+  const receiptOnlyView = currentFilter === "recebimento" && getDisplayStatus(request) === "recebimento";
+  const purchaseOnlyView = currentFilter === "compra" && currentUser.role === "almox";
+  const displayItems = pickupOnlyView
+    ? request.items.filter(isPickupItemPending)
+    : receiptOnlyView
+    ? request.items.filter((item) => isReceiptItemPending(request, item))
+    : purchaseOnlyView
+    ? request.items.filter((item) => item.purchaseApproval === "approved" && getPurchasePendingQty(item) > 0)
+    : request.items;
   const status = card.querySelector(".status-pill");
   const response = card.querySelector(".response");
   const note = card.querySelector("textarea");
@@ -1544,7 +1552,7 @@ function createCard(request) {
 
   const displayStatus = pickupOnlyView ? "atendimento" : getDisplayStatus(request);
   const isReceiptFlow = displayStatus === "recebimento";
-  status.textContent = statusText[displayStatus];
+  status.textContent = getRequestStatusText(request, displayStatus);
   status.className = `status-pill status-${displayStatus}`;
   card.querySelector(".request-summary").addEventListener("click", () => card.classList.toggle("expanded"));
   card.querySelector(".request-code").textContent = request.id;
@@ -1582,10 +1590,12 @@ function createCard(request) {
   card.querySelector(".purchase-arrival-field").hidden = !(isReceiptFlow || (request.status === "compra" && currentUser.role === "almox" && request.purchaseOrder && hasApprovedPurchasePending(request)));
   arrivalDateInput.disabled = isReceiptFlow;
   purchaseWorkflow.classList.remove("active");
-  card.querySelector(".process-map").innerHTML = createProcessMap(request);
+  card.querySelector(".process-map").innerHTML = createProcessMap(pickupOnlyView ? { ...request, status: "atendimento" } : request);
 
   request.items.forEach((item, index) => {
     if (pickupOnlyView && !isPickupItemPending(item)) return;
+    if (receiptOnlyView && !isReceiptItemPending(request, item)) return;
+    if (purchaseOnlyView && !(item.purchaseApproval === "approved" && getPurchasePendingQty(item) > 0)) return;
     if (currentUser.role === "cd" && getCdPendingQty(item) <= 0) return;
     const li = document.createElement("li");
     li.innerHTML = `
@@ -1626,7 +1636,9 @@ function createCard(request) {
 
   if (request.status === "compra" || request.status === "recebimento") {
     fulfillmentPanel.hidden = true;
-    purchaseWorkflow.classList.add("active");
+    if (currentFilter === "compra" || currentFilter === "recebimento") {
+      purchaseWorkflow.classList.add("active");
+    }
     card.querySelector(".transfer-invoice-field").hidden = true;
   }
 
@@ -1685,10 +1697,9 @@ function createCard(request) {
 
   const purchaseLines = isReceiptFlow
     ? getReceiptPendingItems(request)
-    : request.items.filter((item) => getPurchasePendingQty(item) > 0);
+    : request.items.filter((item) => item.purchaseApproval === "approved" && getPurchasePendingQty(item) > 0);
   fulfillmentPanel.hidden = (request.status === "cadastro" || request.status === "compra" || request.status === "aprovacao" || isReceiptFlow) && !pickupMode ? true : false;
-  purchaseWorkflow.classList.toggle("active", ((request.status === "compra" && currentUser.role === "compras") || (isReceiptFlow && currentUser.role === "almox")) && !pickupMode);
-  if (request.status === "compra" && currentUser.role === "almox") purchaseWorkflow.classList.add("active");
+  purchaseWorkflow.classList.toggle("active", (((request.status === "compra" && currentUser.role === "compras") || (request.status === "compra" && currentUser.role === "almox" && currentFilter === "compra") || (isReceiptFlow && currentUser.role === "almox" && currentFilter === "recebimento")) && !pickupMode));
   if (currentUser.role === "cd") purchaseWorkflow.classList.remove("active");
   purchaseItems.innerHTML = purchaseLines.length
     ? purchaseLines.map((item) => {
@@ -1984,7 +1995,7 @@ function saveSapRequestNumber(id, card) {
     sapRequestNumber,
     sapRequestAt: request.sapRequestAt || now,
     sapRequestBy: currentUser.name || currentUser.label,
-    response: `Solicitação SAP registrada pelo Almoxarifado: ${sapRequestNumber}. Aguardando pedido de compra pelo time de Compras.`,
+    response: `Solicitação SAP registrada pelo Almoxarifado: ${sapRequestNumber}. Pendente atualização de Compras com pedido, previsão e acompanhamento.`,
   };
   requests = requests.map((item) => (item.id === id ? updatedRequest : item));
   saveRequests();
@@ -2221,13 +2232,15 @@ function hasPurchaseReceipt(request) {
   return Boolean(request?.items?.some((item) => (Number(item.purchaseReceivedQty) || 0) > 0));
 }
 
+function isReceiptItemPending(request, item) {
+  const cdArrived = Number(item.cdQty) > 0;
+  const purchaseArrived = isPurchaseArrivalRegistered(request) && item.purchaseApproval === "approved" && getPurchasePendingQty(item) > 0;
+  return cdArrived || purchaseArrived;
+}
+
 function getReceiptPendingItems(request) {
   if (!request) return [];
-  return request.items.filter((item) => {
-    const cdArrived = Number(item.cdQty) > 0;
-    const purchaseArrived = isPurchaseArrivalRegistered(request) && item.purchaseApproval === "approved" && getPurchasePendingQty(item) > 0;
-    return cdArrived || purchaseArrived;
-  });
+  return request.items.filter((item) => isReceiptItemPending(request, item));
 }
 
 function getDisplayStatus(request) {
@@ -2242,6 +2255,16 @@ function getDisplayStatus(request) {
   if (request.status === "recebimento" && !hasReceiptPending && hasPurchasePending) return "compra";
   if (request.status === "recebimento" || hasCdReceipt || hasReceiptPending) return "recebimento";
   return request.status;
+}
+
+function getRequestStatusText(request, displayStatus = getDisplayStatus(request)) {
+  if (displayStatus === "compra") {
+    if (!request.sapRequestNumber) return "Pendente solicitação SAP pelo Almoxarifado";
+    if (!request.purchaseOrder) return "Pendente pedido de compra";
+    if (!request.deliveryDate) return "Pendente previsão de entrega";
+    if (!isPurchaseArrivalRegistered(request)) return "Pendente chegada da compra";
+  }
+  return statusText[displayStatus] || displayStatus || "-";
 }
 
 function getCdReceivedQtySum(request) {
@@ -2510,7 +2533,7 @@ function renderHistory() {
           <strong>${request.id}</strong>
           <span>${getRequestTargetLabel(request)} | ${formatItemCount(request.items.length)} | ${request.priority}</span>
         </div>
-        <div><small>Onde está</small><b>${statusText[displayStatus]}</b></div>
+        <div><small>Onde está</small><b>${getRequestStatusText(request, displayStatus)}</b></div>
         <div><small>SLA atual</small><b>${getCurrentSla(request)}</b></div>
       </button>
       <div class="history-details">
@@ -3599,7 +3622,7 @@ function openPartRegistrationEmailDraft(request) {
 function openAlmoxEmailDraft(request, to) {
   const subject = buildEmailSubject(request, "Atendimento Almox");
   const bodyText = buildEmailBody("Relatório de Atendimento - Almoxarifado", `Segue retorno da solicitação ${request.id}, ${getRequestTargetLabel(request).toLowerCase()}.`, [
-    { title: "Resumo da Solicitação", content: `Status: ${statusText[request.status]}\nPrioridade: ${request.priority}\nSolicitante: ${request.requestedBy || "-"}\nManutentor: ${request.maintainer || "-"}` },
+    { title: "Resumo da Solicitação", content: `Status: ${getRequestStatusText(request)}\nPrioridade: ${request.priority}\nSolicitante: ${request.requestedBy || "-"}\nManutentor: ${request.maintainer || "-"}` },
     { title: "Itens", content: formatEmailItems(request.items, (item) => item.quantity, (item) => {
       const pending = Math.max(0, item.quantity - (Number(item.availableQty) || 0) - (Number(item.cdQty) || 0) - getPurchasePendingQty(item));
       return [
@@ -3635,7 +3658,7 @@ function openApprovalEmailDraft(request, to) {
   const subject = buildEmailSubject(request, "Aprova\u00e7\u00e3o de compra");
   const purchaseItems = request.items.filter((item) => getPurchaseBaseQty(item) > 0);
   const bodyText = buildEmailBody("Relatório de Aprovação de Compra", `Segue retorno da aprovação de compra da solicitação ${request.id}, ${getRequestTargetLabel(request).toLowerCase()}.`, [
-    { title: "Resumo da Aprovação", content: `Aprovado por: ${request.purchaseApprovedBy || "Gerente"}\nData: ${formatDateOrDash(request.purchaseApprovedAt)}\nStatus atual: ${statusText[request.status]}` },
+    { title: "Resumo da Aprovação", content: `Aprovado por: ${request.purchaseApprovedBy || "Gerente"}\nData: ${formatDateOrDash(request.purchaseApprovedAt)}\nStatus atual: ${getRequestStatusText(request)}` },
     { title: "Itens", content: purchaseItems.length ? formatEmailItems(purchaseItems, (item) => getPurchaseBaseQty(item), (item) => [
       `STATUS: ${getItemPurchaseStatus(request, item)}`,
     ]) : "Nenhum item pendente de compra." },
@@ -3649,7 +3672,7 @@ function openPurchaseEmailDraft(request, to) {
   const subject = buildEmailSubject(request, "Compra");
   const pendingItems = request.items.filter((item) => getPurchasePendingQty(item) > 0);
   const bodyText = buildEmailBody("Relatório de Compra", `Segue registro de compra para a solicitação ${request.id}, ${getRequestTargetLabel(request).toLowerCase()}.`, [
-    { title: "Dados da Compra", content: `Solicitação: ${request.id}\nSolicitação SAP: ${request.sapRequestNumber || "-"}\nPedido de compra: ${request.purchaseOrder || "-"}\nPrevisão de entrega: ${request.deliveryDate ? formatDateOnly(request.deliveryDate) : "Pendente"}\nObservação de Compras: ${request.buyerNote || "-"}\nStatus: ${statusText[getDisplayStatus(request)]}` },
+    { title: "Dados da Compra", content: `Solicitação: ${request.id}\nSolicitação SAP: ${request.sapRequestNumber || "-"}\nPedido de compra: ${request.purchaseOrder || "-"}\nPrevisão de entrega: ${request.deliveryDate ? formatDateOnly(request.deliveryDate) : "Pendente"}\nObservação de Compras: ${request.buyerNote || "-"}\nStatus: ${getRequestStatusText(request)}` },
     { title: "Itens", content: pendingItems.length ? formatEmailItems(pendingItems, (item) => getPurchasePendingQty(item), () => [
       `SOLICITAÇÃO SAP: ${request.sapRequestNumber || "-"}`,
       `PEDIDO DE COMPRA: ${request.purchaseOrder || "-"}`,
