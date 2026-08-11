@@ -6,7 +6,7 @@
     <title>ManuPeças | JTP Transportes</title>
     <link rel="icon" href="./favicon.ico" sizes="any" />
     <link rel="apple-touch-icon" href="./favicon.png" />
-    <link rel="stylesheet" href="./styles.css?v=20260810-arrival-almox" />
+    <link rel="stylesheet" href="./styles.css?v=20260811-tabs-final" />
   </head>
   <body data-view="login">
     <section class="login-screen" id="login-screen">
@@ -84,11 +84,12 @@
       <nav class="app-tabs" aria-label="Navegação principal">
         <button class="tab-button active" type="button" data-page="request">Pedido</button>
         <button class="tab-button" type="button" data-page="pending">Solicitações</button>
-        <button class="tab-button history-tab" type="button" data-page="history">Histórico</button>
         <button class="tab-button approval-tab" type="button" data-page="approval">Aprovação de compra</button>
         <button class="tab-button purchase-tab" type="button" data-page="purchase">Compra</button>
         <button class="tab-button part-admin-tab" type="button" data-page="part-admin">Cadastro de Item</button>
-        <button class="tab-button admin-tab" type="button" data-page="admin">Controle de Acesso</button>
+        <button class="tab-button email-admin-tab" type="button" data-page="email-admin">E-mail</button>
+        <button class="tab-button admin-tab" type="button" data-page="admin">Acessos</button>
+        <button class="tab-button history-tab" type="button" data-page="history">Histórico</button>
       </nav>
 
       <section class="page page-request active" id="page-request">
@@ -337,6 +338,24 @@
           <div class="part-registration-list" id="part-registration-list"></div>
         </section>
       </section>
+
+      <section class="page page-email-admin" id="page-email-admin">
+        <section class="admin-panel">
+          <div class="queue-header">
+            <div>
+              <p class="eyebrow">Admin</p>
+              <h2>Configuração de e-mails</h2>
+              <p>Defina quem recebe os e-mails automáticos por etapa.</p>
+            </div>
+          </div>
+
+          <form class="email-settings-form" id="email-settings-form">
+            <div class="email-settings-grid" id="email-settings-grid"></div>
+            <button class="primary-action" type="submit">Salvar configurações</button>
+            <p class="form-message" id="email-settings-message"></p>
+          </form>
+        </section>
+      </section>
     </main>
 
     <dialog class="password-dialog" id="password-dialog">
@@ -523,9 +542,9 @@
       </article>
     </template>
 
-    <script src="./parts-data.js"></script>
-    <script src="./wms-data.js"></script>
-    <script src="./cd-wms-data.js"></script>
+    <script src="./parts-data.js?v=20260810-mobile-wms"></script>
+    <script src="./wms-data.js?v=20260810-mobile-wms"></script>
+    <script src="./cd-wms-data.js?v=20260810-mobile-wms"></script>
     <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
     <script>
       const SUPABASE_URL = "https://lxlhubvvxygpgvoxbjju.supabase.co";
@@ -536,7 +555,7 @@
         SUPABASE_PUBLIC_KEY
       );
     </script>
-    <script src="./app.js?v=20260810-arrival-almox"></script>
+    <script src="./app.js?v=20260811-tabs-final"></script>
   </body>
 </html>
 

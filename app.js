@@ -6,7 +6,8 @@ const DELETED_USERS_KEY = "pecas-transporte-usuarios-excluidos";
 const NOTIFICATION_READ_KEY = "pecas-transporte-notificacoes-lidas";
 const CUSTOM_PARTS_KEY = "pecas-transporte-pecas-cadastradas";
 const PART_REGISTRATIONS_KEY = "pecas-transporte-cadastros-pecas";
-const HISTORY_PURGE_KEY = "manupecas-limpeza-historico-20260810-01";
+const EMAIL_SETTINGS_KEY = "pecas-transporte-email-config";
+const HISTORY_PURGE_KEY = "manupecas-limpeza-historico-20260811-oficial-01";
 const supabaseClient = window.manuPecasSupabase || null;
 
 const partsCatalog = Array.isArray(globalThis.PARTS_CATALOG) ? globalThis.PARTS_CATALOG : [];
@@ -17,9 +18,12 @@ const accounts = {
   "erik.barreto": { password: "1234", role: "admin", label: "Admin", name: "ERIK.BARRETO", corporateEmail: "erik.barreto@jtptransportes.com.br" },
   "bruno.medici": { password: "1234", role: "admin", label: "Admin", name: "BRUNO.MEDICI", corporateEmail: "bruno.medici@jtptransportes.com.br" },
   "caio.silveira": { password: "1234", role: "admin", label: "Admin", name: "CAIO.SILVEIRA", corporateEmail: "caio.silveira@jtptransportes.com.br" },
-  "rodrigo.silva": { password: "1234", role: "manager", label: "Gerente", name: "RODRIGO.SILVA", corporateEmail: "rodrigo.silva@jtptransportes.com.br" },
+  "rodrigo.araujo": { password: "1234", role: "manager", label: "Gerente", name: "RODRIGO.ARAUJO", corporateEmail: "rodrigo.araujo@jtptransportes.com.br" },
   "carla.alves": { password: "1234", role: "cd", label: "CD", name: "CARLA.ALVES", corporateEmail: "carla.alves@jtptransportes.com.br" },
   "jessica.lopes": { password: "1234", role: "almox", label: "Almoxarifado", name: "JESSICA.LOPES", corporateEmail: "jessica.lopes@jtptransportes.com.br" },
+  "gabriel.ribeiro": { password: "1234", role: "manager", label: "Gerente", name: "GABRIEL.RIBEIRO", corporateEmail: "gabriel.ribeiro@jtptransportes.com.br" },
+  "wesley.vinicius": { password: "1234", role: "almox", label: "Almoxarifado", name: "WESLEY.VINICIUS", corporateEmail: "wesley.vinicius@jtptransportes.com.br" },
+  "anderson.silva": { password: "1234", role: "cd", label: "CD", name: "ANDERSON.SILVA", corporateEmail: "anderson.silva@jtptransportes.com.br" },
   "marcio.ferreira": { password: "1234", role: "compras", label: "Compras", name: "MARCIO.FERREIRA", corporateEmail: "marcio.ferreira@jtptransportes.com.br" },
   "matheus.campos": { password: "1234", role: "pcm", label: "PCM", name: "MATHEUS.CAMPOS", corporateEmail: "matheus.campos@jtptransportes.com.br" },
 };
@@ -29,7 +33,15 @@ const emailAliases = {
   "erik.lima": "erik.barreto",
   bruno: "bruno.medici",
   caio: "caio.silveira",
-  rodrigo: "rodrigo.silva",
+  rodrigo: "rodrigo.araujo",
+  "rodrigo.silva": "rodrigo.araujo",
+  "rodrigo.araujo": "rodrigo.araujo",
+  gabriel: "gabriel.ribeiro",
+  "gabriel.ribeiro": "gabriel.ribeiro",
+  wesley: "wesley.vinicius",
+  "wesley.vinicius": "wesley.vinicius",
+  anderson: "anderson.silva",
+  "anderson.silva": "anderson.silva",
   carla: "carla.alves",
   jessica: "jessica.lopes",
   marcio: "marcio.ferreira",
@@ -48,6 +60,35 @@ const statusText = {
   retirado: "Item retirado pelo PCM",
 };
 
+const emailStepKeys = ["request", "registration", "almox", "cd", "approval", "purchase", "receipt", "pickup"];
+const emailStepLabels = {
+  request: "Solicitação",
+  registration: "Cadastro de item",
+  almox: "Atendimento Almoxarifado",
+  cd: "Atendimento CD",
+  approval: "Aprovação de compra",
+  purchase: "Compra",
+  receipt: "Recebimento",
+  pickup: "Retirada",
+};
+const defaultEmailSettings = {
+  request: { users: ["jessica.lopes"], extra: "" },
+  registration: { users: ["erik.barreto", "bruno.medici"], extra: "" },
+  almox: { users: ["matheus.campos"], extra: "" },
+  cd: { users: ["jessica.lopes"], extra: "" },
+  approval: { users: ["jessica.lopes", "marcio.ferreira"], extra: "" },
+  purchase: { users: ["jessica.lopes", "matheus.campos", "rodrigo.araujo"], extra: "" },
+  receipt: { users: ["matheus.campos", "rodrigo.araujo"], extra: "" },
+  pickup: { users: ["matheus.campos"], extra: "" },
+};
+
+const fixedUserCorporateEmails = {
+  "rodrigo.araujo": "rodrigo.araujo@jtptransportes.com.br",
+  "gabriel.ribeiro": "gabriel.ribeiro@jtptransportes.com.br",
+  "wesley.vinicius": "wesley.vinicius@jtptransportes.com.br",
+  "anderson.silva": "anderson.silva@jtptransportes.com.br",
+};
+
 const seedRequests = [];
 
 let requests = loadRequests();
@@ -55,6 +96,7 @@ let managedUsers = loadManagedUsers();
 let deletedUsers = loadDeletedUsers();
 let customParts = loadCustomParts();
 let partRegistrations = loadPartRegistrations();
+let emailSettings = loadEmailSettings();
 let currentUser = loadSession();
 let currentFilter = "solicitacao";
 let currentPage = "request";
@@ -108,6 +150,9 @@ const approvalList = document.querySelector("#approval-list");
 const purchaseOverviewList = document.querySelector("#purchase-overview-list");
 const userForm = document.querySelector("#user-form");
 const userList = document.querySelector("#user-list");
+const emailSettingsForm = document.querySelector("#email-settings-form");
+const emailSettingsGrid = document.querySelector("#email-settings-grid");
+const emailSettingsMessage = document.querySelector("#email-settings-message");
 const partRegistrationList = document.querySelector("#part-registration-list");
 const slaRequest = document.querySelector("#sla-request");
 const slaService = document.querySelector("#sla-service");
@@ -295,6 +340,40 @@ userForm.addEventListener("submit", (event) => {
   renderUsers();
 });
 
+emailSettingsForm?.addEventListener("submit", (event) => {
+  event.preventDefault();
+  if (currentUser?.role !== "admin") return;
+  emailSettings = Object.fromEntries(emailStepKeys.map((key) => {
+    const users = Array.from(emailSettingsForm.querySelectorAll(`[data-email-step="${key}"][data-user-login]:checked`)).map((input) => input.dataset.userLogin);
+    const extra = emailSettingsForm.querySelector(`[data-email-step="${key}"][data-extra-email]`)?.value || "";
+    return [key, { users, extra }];
+  }));
+  saveEmailSettings();
+  renderEmailSettings();
+  emailSettingsMessage.textContent = "Configurações gravadas com sucesso.";
+  setTimeout(() => {
+    emailSettingsMessage.textContent = "";
+  }, 2500);
+});
+
+emailSettingsForm?.addEventListener("click", (event) => {
+  const button = event.target.closest("[data-email-toggle-all]");
+  if (!button) return;
+  const key = button.dataset.emailToggleAll;
+  const checkboxes = Array.from(emailSettingsForm.querySelectorAll(`[data-email-step="${key}"][data-user-login]`));
+  const shouldCheck = checkboxes.some((input) => !input.checked);
+  checkboxes.forEach((input) => {
+    input.checked = shouldCheck;
+  });
+  updateEmailStepSummary(key);
+});
+
+emailSettingsForm?.addEventListener("change", (event) => {
+  const input = event.target.closest("[data-email-step][data-user-login]");
+  if (!input) return;
+  updateEmailStepSummary(input.dataset.emailStep);
+});
+
 userList.addEventListener("click", (event) => {
   const button = event.target.closest("button[data-user-action]");
   if (!button) return;
@@ -367,6 +446,8 @@ async function startApp() {
   resetItemLines();
   await syncFromSupabase();
   await purgeHistoryOnce();
+  mirrorRequestsToStructuredTables(requests);
+  mirrorCustomPartsToStructuredTable(customParts);
   setPage(currentPage);
   render();
 }
@@ -405,6 +486,7 @@ function setPage(page) {
   if (page === "purchase") renderPurchaseOverview();
   if (page === "admin") renderUsers();
   if (page === "part-admin") renderPartRegistrations();
+  if (page === "email-admin") renderEmailSettings();
 }
 
 function goToWorkQueue(filter) {
@@ -691,21 +773,31 @@ async function syncFromSupabase() {
   if (!supabaseClient) return;
 
   try {
-    const [remoteRequests, remoteUsers, remoteDeletedUsers, remoteCustomParts, remotePartRegistrations] = await Promise.all([
+    const [remoteRequests, remoteUsers, remoteDeletedUsers, remoteCustomParts, remotePartRegistrations, remoteStructuredParts, remoteEmailSettings] = await Promise.all([
       loadSupabaseRows("manupecas_requests", "id"),
       loadSupabaseRows("manupecas_users", "email"),
       loadSupabaseDeletedUsers(),
       loadSupabaseRows("manupecas_custom_parts", "code"),
       loadSupabaseRows("manupecas_part_registrations", "id"),
+      loadStructuredItems(),
+      loadEmailSettingsFromSupabase(),
     ]);
 
-    if (remoteRequests) {
-      requests = remoteRequests.map(normalizeRequest).sort((a, b) => String(b.createdAt || "").localeCompare(String(a.createdAt || "")));
+    let syncedRequests = remoteRequests;
+    if (syncedRequests && syncedRequests.length === 0) {
+      const structuredRequests = await loadStructuredRequests();
+      if (structuredRequests && structuredRequests.length > 0) syncedRequests = structuredRequests;
+    }
+
+    if (syncedRequests) {
+      requests = syncedRequests.map(normalizeRequest).sort((a, b) => String(b.createdAt || "").localeCompare(String(a.createdAt || "")));
       localStorage.setItem(REQUESTS_KEY, JSON.stringify(requests));
     }
     if (remoteUsers) {
-      managedUsers = remoteUsers.map((user) => normalizeAccount(user, user.email));
+      managedUsers = dedupeUsers(remoteUsers.map((user) => normalizeAccount(user, user.email)));
       localStorage.setItem(USERS_KEY, JSON.stringify(managedUsers));
+      saveManagedUsers();
+      deleteSupabaseRow("manupecas_users", "email", "rodrigo.silva");
     }
     if (remoteDeletedUsers) {
       deletedUsers = remoteDeletedUsers;
@@ -715,9 +807,17 @@ async function syncFromSupabase() {
       customParts = remoteCustomParts;
       localStorage.setItem(CUSTOM_PARTS_KEY, JSON.stringify(customParts));
     }
+    if (remoteStructuredParts) {
+      customParts = mergeCustomParts(customParts, remoteStructuredParts);
+      localStorage.setItem(CUSTOM_PARTS_KEY, JSON.stringify(customParts));
+    }
     if (remotePartRegistrations) {
       partRegistrations = remotePartRegistrations;
       localStorage.setItem(PART_REGISTRATIONS_KEY, JSON.stringify(partRegistrations));
+    }
+    if (remoteEmailSettings) {
+      emailSettings = normalizeEmailSettings(remoteEmailSettings);
+      localStorage.setItem(EMAIL_SETTINGS_KEY, JSON.stringify(emailSettings));
     }
   } catch (error) {
     console.warn("Supabase indisponível. Usando dados locais.", error);
@@ -736,6 +836,8 @@ async function purgeHistoryOnce() {
       const results = await Promise.all([
         supabaseClient.from("manupecas_requests").delete().neq("id", "__never__"),
         supabaseClient.from("manupecas_part_registrations").delete().neq("id", "__never__"),
+        supabaseClient.from("solicitacao_itens").delete().neq("id", "00000000-0000-0000-0000-000000000000"),
+        supabaseClient.from("solicitacoes").delete().neq("id", "00000000-0000-0000-0000-000000000000"),
       ]);
       results.forEach(({ error }) => {
         if (error) console.warn("Erro ao limpar histórico remoto:", error.message);
@@ -757,6 +859,81 @@ async function loadSupabaseRows(table, keyField) {
   return (data || []).map((row) => row.data).filter(Boolean);
 }
 
+async function loadStructuredItems() {
+  const { data, error } = await supabaseClient
+    .from("itens")
+    .select("codigo_sap, descricao, codigo_original, ativo, criado_em")
+    .eq("ativo", true);
+  if (error) {
+    console.warn("Erro ao carregar itens estruturados:", error.message);
+    return null;
+  }
+  return (data || [])
+    .map((row) => ({
+      code: String(row.codigo_sap || "").trim(),
+      description: String(row.descricao || "").trim(),
+      originalCode: String(row.codigo_original || "").trim(),
+      createdAt: row.criado_em || "",
+    }))
+    .filter((part) => part.code && part.description);
+}
+
+async function loadStructuredRequests() {
+  const [{ data: requestRows, error: requestError }, { data: itemRows, error: itemError }] = await Promise.all([
+    supabaseClient
+      .from("solicitacoes")
+      .select("id, numero, prefixo, tipo_solicitacao, prioridade, motivo, solicitante, manutentor, status_atual, criado_em")
+      .order("criado_em", { ascending: false }),
+    supabaseClient
+      .from("solicitacao_itens")
+      .select("solicitacao_id, codigo_sap, descricao, quantidade_solicitada, quantidade_almox, quantidade_cd, quantidade_compra, quantidade_retirada, status_item, nf_transferencia, entrada_sap, criado_em"),
+  ]);
+
+  if (requestError || itemError) {
+    console.warn("Erro ao carregar solicitações estruturadas:", requestError?.message || itemError?.message);
+    return null;
+  }
+
+  const itemsByRequest = (itemRows || []).reduce((acc, item) => {
+    const key = item.solicitacao_id;
+    if (!key) return acc;
+    if (!acc[key]) acc[key] = [];
+    acc[key].push({
+      code: item.codigo_sap || "",
+      description: item.descricao || "Peça sem descrição",
+      quantity: Number(item.quantidade_solicitada) || 1,
+      availableQty: Number(item.quantidade_almox) || 0,
+      cdQty: Number(item.quantidade_cd) || 0,
+      purchaseQty: Number(item.quantidade_compra) || 0,
+      withdrawnQty: Number(item.quantidade_retirada) || 0,
+    });
+    return acc;
+  }, {});
+
+  return (requestRows || []).map((row) => ({
+    id: row.numero,
+    bus: row.tipo_solicitacao === "frota" ? "Frota" : row.prefixo,
+    targetType: row.tipo_solicitacao || (String(row.prefixo || "").toLowerCase() === "frota" ? "frota" : "prefixo"),
+    priority: row.prioridade || "Normal",
+    reason: row.motivo || "",
+    requestedBy: row.solicitante || "PCM",
+    maintainer: row.manutentor || "",
+    createdAt: row.criado_em || new Date().toISOString(),
+    items: itemsByRequest[row.id] || [],
+  })).filter((request) => request.id && request.items.length > 0);
+}
+
+function mergeCustomParts(localParts, remoteParts) {
+  const merged = [...localParts];
+  const seen = new Set(merged.map((part) => String(part.code || "").trim()));
+  remoteParts.forEach((part) => {
+    if (seen.has(part.code)) return;
+    seen.add(part.code);
+    merged.push(part);
+  });
+  return merged;
+}
+
 async function loadSupabaseDeletedUsers() {
   const { data, error } = await supabaseClient.from("manupecas_deleted_users").select("email");
   if (error) {
@@ -766,11 +943,106 @@ async function loadSupabaseDeletedUsers() {
   return (data || []).map((row) => row.email).filter(Boolean);
 }
 
+async function loadEmailSettingsFromSupabase() {
+  const { data, error } = await supabaseClient.from("manupecas_email_settings").select("id, data").eq("id", "default").maybeSingle();
+  if (error) {
+    console.warn("Erro ao carregar configuração de e-mail:", error.message);
+    return null;
+  }
+  return data?.data || null;
+}
+
 function upsertSupabaseRows(table, keyField, rows) {
   if (!supabaseClient) return;
   const payload = rows.map((row) => ({ [keyField]: row[keyField], data: row, updated_at: new Date().toISOString() }));
   supabaseClient.from(table).upsert(payload, { onConflict: keyField }).then(({ error }) => {
     if (error) console.warn(`Erro ao salvar ${table}:`, error.message);
+  });
+}
+
+async function mirrorRequestsToStructuredTables(rows) {
+  if (!supabaseClient) return;
+  const normalizedRows = rows.map(normalizeRequest);
+  if (normalizedRows.length === 0) return;
+
+  try {
+    const requestPayload = normalizedRows.map((request) => ({
+      numero: request.id,
+      prefixo: request.targetType === "frota" ? null : String(request.bus || ""),
+      tipo_solicitacao: request.targetType || "prefixo",
+      prioridade: request.priority || "Normal",
+      motivo: request.reason || "",
+      solicitante: request.requestedBy || "",
+      manutentor: request.maintainer || "",
+      status_atual: statusText[getDisplayStatus(request)] || request.status || "",
+      criado_em: request.createdAt || new Date().toISOString(),
+    }));
+
+    const { data: savedRequests, error: requestError } = await supabaseClient
+      .from("solicitacoes")
+      .upsert(requestPayload, { onConflict: "numero" })
+      .select("id, numero");
+
+    if (requestError) {
+      console.warn("Erro ao salvar solicitações estruturadas:", requestError.message);
+      return;
+    }
+
+    const idByNumber = new Map((savedRequests || []).map((row) => [row.numero, row.id]));
+    const requestIds = Array.from(idByNumber.values()).filter(Boolean);
+    if (requestIds.length === 0) return;
+
+    const { error: deleteError } = await supabaseClient
+      .from("solicitacao_itens")
+      .delete()
+      .in("solicitacao_id", requestIds);
+    if (deleteError) {
+      console.warn("Erro ao atualizar itens estruturados:", deleteError.message);
+      return;
+    }
+
+    const itemPayload = normalizedRows.flatMap((request) => {
+      const solicitacaoId = idByNumber.get(request.id);
+      if (!solicitacaoId) return [];
+      return request.items.map((item) => ({
+        solicitacao_id: solicitacaoId,
+        codigo_sap: item.code || "",
+        descricao: item.description || "",
+        quantidade_solicitada: Number(item.quantity) || 0,
+        quantidade_almox: Number(item.availableQty) || 0,
+        quantidade_cd: Number(item.cdQty) || 0,
+        quantidade_compra: getPurchasePendingQty(item),
+        quantidade_retirada: Number(item.withdrawnQty) || 0,
+        status_item: getItemPurchaseStatus(request, item),
+        nf_transferencia: getItemInvoiceName(request, item, "transfer"),
+        entrada_sap: getItemReceiptMarkup(request, item),
+        criado_em: request.createdAt || new Date().toISOString(),
+      }));
+    });
+
+    if (itemPayload.length > 0) {
+      const { error: itemError } = await supabaseClient.from("solicitacao_itens").insert(itemPayload);
+      if (itemError) console.warn("Erro ao salvar itens estruturados:", itemError.message);
+    }
+  } catch (error) {
+    console.warn("Não foi possível espelhar solicitações estruturadas.", error);
+  }
+}
+
+function mirrorCustomPartsToStructuredTable(parts) {
+  if (!supabaseClient || parts.length === 0) return;
+  const payload = parts
+    .map((part) => ({
+      codigo_sap: String(part.code || "").trim(),
+      descricao: String(part.description || "").trim(),
+      codigo_original: String(part.originalCode || "").trim(),
+      ativo: true,
+      criado_em: part.createdAt || new Date().toISOString(),
+    }))
+    .filter((part) => part.codigo_sap && part.descricao);
+  if (payload.length === 0) return;
+  supabaseClient.from("itens").upsert(payload, { onConflict: "codigo_sap" }).then(({ error }) => {
+    if (error) console.warn("Erro ao salvar itens estruturados:", error.message);
   });
 }
 
@@ -796,6 +1068,7 @@ function deleteSupabaseRow(table, keyField, keyValue) {
 function saveRequests() {
   localStorage.setItem(REQUESTS_KEY, JSON.stringify(requests));
   upsertSupabaseRows("manupecas_requests", "id", requests);
+  mirrorRequestsToStructuredTables(requests);
 }
 
 function loadManagedUsers() {
@@ -804,17 +1077,27 @@ function loadManagedUsers() {
 
   try {
     const genericUsers = new Set(["pcm@empresa.com.br", "almox@empresa.com.br", "cd@empresa.com.br", "gerente@empresa.com.br", "admin@empresa.com.br"]);
-    return JSON.parse(stored)
+    return dedupeUsers(JSON.parse(stored)
       .map((user) => normalizeAccount(user, user.email))
-      .filter((user) => !genericUsers.has(String(user.email || "").toLowerCase()));
+      .filter((user) => !genericUsers.has(String(user.email || "").toLowerCase())));
   } catch {
     return [];
   }
 }
 
 function saveManagedUsers() {
+  managedUsers = dedupeUsers(managedUsers.map((user) => normalizeAccount(user, user.email)));
   localStorage.setItem(USERS_KEY, JSON.stringify(managedUsers));
   upsertSupabaseRows("manupecas_users", "email", managedUsers);
+}
+
+function dedupeUsers(users) {
+  const byLogin = new Map();
+  users.forEach((user) => {
+    const normalizedUser = normalizeAccount(user, user.email);
+    if (normalizedUser.email) byLogin.set(normalizedUser.email, normalizedUser);
+  });
+  return [...byLogin.values()];
 }
 
 function loadDeletedUsers() {
@@ -830,6 +1113,81 @@ function saveDeletedUsers() {
   replaceSupabaseDeletedUsers();
 }
 
+function loadEmailSettings() {
+  try {
+    return normalizeEmailSettings(JSON.parse(localStorage.getItem(EMAIL_SETTINGS_KEY) || "{}"));
+  } catch {
+    return normalizeEmailSettings({});
+  }
+}
+
+function normalizeEmailSettings(settings) {
+  return Object.fromEntries(emailStepKeys.map((key) => [key, normalizeEmailStepSetting(settings?.[key], defaultEmailSettings[key])]));
+}
+
+function normalizeEmailStepSetting(setting, fallback) {
+  if (Array.isArray(setting)) return { users: uniqueLogins(setting), extra: "" };
+  if (setting && typeof setting === "object") {
+    return {
+      users: uniqueLogins(setting.users || []),
+      extra: normalizeEmailList(setting.extra || ""),
+    };
+  }
+  const converted = splitEmailLikeList(setting || "");
+  if (converted.length === 0) return { users: uniqueLogins(fallback?.users || []), extra: normalizeEmailList(fallback?.extra || "") };
+  return convertEmailsToUserSetting(converted);
+}
+
+function splitEmailLikeList(value) {
+  return String(value || "")
+    .split(/[;,]+/)
+    .map((email) => email.trim())
+    .filter(Boolean);
+}
+
+function uniqueLogins(values) {
+  return values
+    .map(normalizeLogin)
+    .filter(Boolean)
+    .filter((login, index, list) => list.indexOf(login) === index);
+}
+
+function convertEmailsToUserSetting(values) {
+  const accountsMap = getAllAccounts();
+  const users = [];
+  const extra = [];
+  values.forEach((value) => {
+    const normalizedValue = String(value || "").trim().toLowerCase();
+    const login = normalizeLogin(normalizedValue);
+    const matchedLogin = Object.entries(accountsMap).find(([accountLogin, account]) => {
+      return accountLogin === login || normalizeCorporateEmail(account.corporateEmail, accountLogin) === normalizedValue;
+    })?.[0];
+    if (matchedLogin) users.push(matchedLogin);
+    else extra.push(userLoginToEmail(value));
+  });
+  return { users: uniqueLogins(users), extra: normalizeEmailList(extra.join(";")) };
+}
+
+function normalizeEmailList(value) {
+  return splitEmailLikeList(value)
+    .map((email) => userLoginToEmail(email.trim()))
+    .filter(Boolean)
+    .filter((email, index, list) => list.indexOf(email) === index)
+    .join("; ");
+}
+
+function saveEmailSettings() {
+  emailSettings = normalizeEmailSettings(emailSettings);
+  localStorage.setItem(EMAIL_SETTINGS_KEY, JSON.stringify(emailSettings));
+  if (!supabaseClient) return;
+  supabaseClient
+    .from("manupecas_email_settings")
+    .upsert({ id: "default", data: emailSettings, updated_at: new Date().toISOString() }, { onConflict: "id" })
+    .then(({ error }) => {
+      if (error) console.warn("Erro ao salvar configuração de e-mail:", error.message);
+    });
+}
+
 function normalizeLogin(login) {
   const value = String(login || "").trim().toLowerCase().replace(/@jtptransportes\.com\.br$/, "");
   return emailAliases[value] || value;
@@ -841,7 +1199,14 @@ function defaultCorporateEmail(login) {
 }
 
 function normalizeCorporateEmail(email, login) {
-  return String(email || "").trim().toLowerCase() || defaultCorporateEmail(login);
+  const normalizedLogin = normalizeLogin(login);
+  return fixedUserCorporateEmails[normalizedLogin] || String(email || "").trim().toLowerCase() || defaultCorporateEmail(normalizedLogin);
+}
+
+function normalizeUserName(name, login) {
+  const normalizedLogin = normalizeLogin(login);
+  if (fixedUserCorporateEmails[normalizedLogin]) return normalizedLogin.toUpperCase();
+  return String(name || normalizedLogin).trim().toUpperCase();
 }
 
 function normalizeAccount(user, email) {
@@ -849,6 +1214,7 @@ function normalizeAccount(user, email) {
   return {
     ...user,
     email: login,
+    name: normalizeUserName(user.name, login),
     corporateEmail: normalizeCorporateEmail(user.corporateEmail, login),
   };
 }
@@ -864,6 +1230,7 @@ function loadCustomParts() {
 function saveCustomParts() {
   localStorage.setItem(CUSTOM_PARTS_KEY, JSON.stringify(customParts));
   upsertSupabaseRows("manupecas_custom_parts", "code", customParts);
+  mirrorCustomPartsToStructuredTable(customParts);
 }
 
 function loadPartRegistrations() {
@@ -1090,6 +1457,10 @@ function render() {
   }
   if (currentPage === "admin") {
     renderUsers();
+    return;
+  }
+  if (currentPage === "email-admin") {
+    renderEmailSettings();
     return;
   }
   if (currentPage === "part-admin") {
@@ -2195,6 +2566,49 @@ function renderUsers() {
     .join("");
 }
 
+function renderEmailSettings() {
+  if (!emailSettingsForm || !emailSettingsGrid) return;
+  emailSettings = normalizeEmailSettings(emailSettings);
+  const users = Object.entries(getAllAccounts()).map(([email, user]) => ({ ...user, email }));
+  emailSettingsGrid.innerHTML = emailStepKeys
+    .map((key) => {
+      const setting = emailSettings[key] || { users: [], extra: "" };
+      const allSelected = users.length > 0 && setting.users.length >= users.length;
+      return `<article class="email-step-card">
+        <div class="email-step-head">
+          <div>
+            <strong>${emailStepLabels[key]}</strong>
+            <span data-email-summary="${key}">${setting.users.length} usuário(s) selecionado(s)</span>
+          </div>
+          <button class="secondary-action compact email-toggle-all" type="button" data-email-toggle-all="${key}">${allSelected ? "Limpar seleção" : "Selecionar todos"}</button>
+        </div>
+        <div class="email-user-options">
+          ${users.map((user) => `
+            <label class="email-user-chip">
+              <input type="checkbox" data-email-step="${key}" data-user-login="${escapeAttr(user.email)}" ${setting.users.includes(user.email) ? "checked" : ""} />
+              <span>${escapeHtml(user.name || user.email)}</span>
+              <small>${escapeHtml(user.corporateEmail || defaultCorporateEmail(user.email))}</small>
+            </label>
+          `).join("")}
+        </div>
+        <label class="email-extra-field">
+          <small>E-mails extras</small>
+          <input type="text" data-email-step="${key}" data-extra-email value="${escapeAttr(setting.extra || "")}" placeholder="email@jtptransportes.com.br; outro@email.com" />
+        </label>
+      </article>`;
+    })
+    .join("");
+}
+
+function updateEmailStepSummary(key) {
+  const checkboxes = Array.from(emailSettingsForm.querySelectorAll(`[data-email-step="${key}"][data-user-login]`));
+  const selected = checkboxes.filter((input) => input.checked).length;
+  const summary = emailSettingsForm.querySelector(`[data-email-summary="${key}"]`);
+  const button = emailSettingsForm.querySelector(`[data-email-toggle-all="${key}"]`);
+  if (summary) summary.textContent = `${selected} usuário(s) selecionado(s)`;
+  if (button) button.textContent = selected === checkboxes.length ? "Limpar seleção" : "Selecionar todos";
+}
+
 function markUserRowChanged(target) {
   if (!target?.matches?.(".user-password, .user-role, .user-corporate-email")) return;
   const row = target.closest(".user-row");
@@ -2650,7 +3064,7 @@ function createHistoryTimeline(request) {
       owner: request.purchaseOrder ? `Pedido ${request.purchaseOrder}` : request.sapRequestNumber ? `SAP ${request.sapRequestNumber}` : "-",
       date: request.purchaseAt,
       sla: getAreaSla(request, "compra"),
-      state: request.purchaseAt ? request.purchaseArrivedAt || hasPurchaseReceipt(request) ? "done" : "active" : "idle",
+      state: request.purchaseAt ? hasPurchaseReceipt(request) ? "done" : "active" : "idle",
     },
     {
       label: "Recebimento",
@@ -2731,9 +3145,14 @@ function getItemReceiptMarkup(request, item) {
   return "-";
 }
 
-function createPurchaseItemDetails(request, items) {
+function createPurchaseItemDetails(request, items, compact = false) {
   const rows = items
-    .map((item) => `<div class="history-item-row purchase-item-row">
+    .map((item) => compact ? `<div class="history-item-row purchase-item-row compact-purchase-item-row">
+      <strong>${item.code}</strong>
+      <span>${item.description}</span>
+      <b>${getPurchasePendingQty(item)}</b>
+      <em>${getItemPurchaseStatus(request, item)}</em>
+    </div>` : `<div class="history-item-row purchase-item-row">
       <strong>${item.code}</strong>
       <span>${item.description}</span>
       <b>${getPurchasePendingQty(item)}</b>
@@ -2744,6 +3163,18 @@ function createPurchaseItemDetails(request, items) {
       <b>${getAreaSla(request, "compra")}</b>
     </div>`)
     .join("");
+
+  if (compact) {
+    return `
+      <div class="history-item-header purchase-item-header compact-purchase-item-header">
+        <span>Código</span>
+        <span>Descrição</span>
+        <span>Qtd.</span>
+        <span>Status</span>
+      </div>
+      ${rows}
+    `;
+  }
 
   return `
     <div class="history-item-header purchase-item-header">
@@ -2768,9 +3199,6 @@ function createApprovalItemDetails(request, items, canApprove) {
       </label>
       <strong>${item.code}</strong>
       <span>${item.description}</span>
-      <b>${item.quantity || 0}</b>
-      <b>${item.availableQty || 0}</b>
-      <b>${item.cdQty || 0}</b>
       <b>${getPurchaseBaseQty(item)}</b>
       <em>${getItemPurchaseStatus(request, item)}</em>
     </div>`)
@@ -2781,10 +3209,7 @@ function createApprovalItemDetails(request, items, canApprove) {
       <span></span>
       <span>Código</span>
       <span>Descrição</span>
-      <span>PCM</span>
-      <span>Almox</span>
-      <span>CD</span>
-      <span>A aprovar</span>
+      <span>Qtd. compra</span>
       <span>Status</span>
     </div>
     ${rows}
@@ -2920,8 +3345,24 @@ function renderPurchaseOverview() {
 
   purchaseRequests.forEach(({ request, items }) => {
     const row = document.createElement("article");
-    row.className = "history-row purchase-request-row";
+    const buyerView = currentUser.role === "compras";
+    row.className = `history-row purchase-request-row ${buyerView ? "buyer-request-row" : ""}`;
     const purchaseReceived = items.some((item) => (Number(item.purchaseReceivedQty) || 0) > 0);
+    const purchaseMeta = buyerView ? `
+          <div><small>Solicitação SAP</small><b>${request.sapRequestNumber || "-"}</b></div>
+          <div><small>Pedido de compra</small><b>${request.purchaseOrder || "-"}</b></div>
+          <div><small>Previsão de entrega</small><b>${request.deliveryDate ? formatDateOnly(request.deliveryDate) : "-"}</b></div>
+          <div><small>Observação de compras</small><b>${request.buyerNote || "-"}</b></div>
+        ` : `
+          <div><small>Envio para compra</small><b>${formatDateOrDash(request.purchaseAt)}</b></div>
+          <div><small>Solicitação SAP</small><b>${request.sapRequestNumber || "-"}</b></div>
+          <div><small>Previsão de entrega</small><b>${request.deliveryDate ? formatDateOnly(request.deliveryDate) : "-"}</b></div>
+          <div><small>Chegada real</small><b>${request.purchaseArrivedDate ? formatDateOnly(request.purchaseArrivedDate) : "-"}</b></div>
+          <div><small>Recebimento Almox</small><b>${purchaseReceived ? formatDateOrDash(request.receiptAt) : "-"}</b></div>
+          <div><small>Pedido de compra</small><b>${request.purchaseOrder || "-"}</b></div>
+          <div><small>Entrada SAP</small><b>${purchaseReceived ? request.receiptNumber || "-" : "-"}</b></div>
+          <div><small>Observação de compras</small><b>${request.buyerNote || "-"}</b></div>
+        `;
     row.innerHTML = `
       <button class="history-summary" type="button" aria-expanded="false">
         <div>
@@ -2933,19 +3374,12 @@ function renderPurchaseOverview() {
       </button>
       <div class="history-details">
         <div class="history-qty-map">
-          ${createPurchaseItemDetails(request, items)}
+          ${createPurchaseItemDetails(request, items, buyerView)}
         </div>
         <div class="history-meta history-dates">
-          <div><small>Envio para compra</small><b>${formatDateOrDash(request.purchaseAt)}</b></div>
-          <div><small>Solicitação SAP</small><b>${request.sapRequestNumber || "-"}</b></div>
-          <div><small>Previsão de entrega</small><b>${request.deliveryDate ? formatDateOnly(request.deliveryDate) : "-"}</b></div>
-          <div><small>Chegada real</small><b>${request.purchaseArrivedDate ? formatDateOnly(request.purchaseArrivedDate) : "-"}</b></div>
-          <div><small>Recebimento Almox</small><b>${purchaseReceived ? formatDateOrDash(request.receiptAt) : "-"}</b></div>
-          <div><small>Pedido de compra</small><b>${request.purchaseOrder || "-"}</b></div>
-          <div><small>Entrada SAP</small><b>${purchaseReceived ? request.receiptNumber || "-" : "-"}</b></div>
-          <div><small>Observação de compras</small><b>${request.buyerNote || "-"}</b></div>
+          ${purchaseMeta}
         </div>
-        ${currentUser.role === "compras" ? `
+        ${buyerView ? `
           <div class="purchase-delivery-editor">
             <label>
               Solicitação SAP
@@ -3057,24 +3491,26 @@ function formatPlainTable(headers, rows) {
 
 function formatEmailItems(items, getQuantity, getExtraLines = () => []) {
   return items
-    .map((item) => {
+    .map((item, index) => {
       const quantity = Number(getQuantity(item)) || 0;
       const extraLines = getExtraLines(item).filter(Boolean);
-      return [
+      const block = [
         `ITEM: ${item.description}`,
         "",
         `QTD: ${quantity} UNIDADES`,
         "",
         `COD: ${item.code}`,
-        ...extraLines,
-      ].join("\n");
+      ];
+      if (extraLines.length) block.push("", ...extraLines);
+      return `${index > 0 ? "----------------------------------------\n" : ""}${block.join("\n")}`;
     })
-    .join("\n\n");
+    .join("\n\n\n");
 }
 
 function buildEmailBody(title, intro, sections) {
   return [
     title.toUpperCase(),
+    "=".repeat(title.length),
     "",
     "Prezados,",
     "",
@@ -3082,7 +3518,7 @@ function buildEmailBody(title, intro, sections) {
     "",
     ...sections.flatMap((section) => [
       section.title.toUpperCase(),
-      "-".repeat(section.title.length),
+      "-".repeat(Math.max(section.title.length, 24)),
       section.content,
       "",
     ]),
@@ -3100,11 +3536,19 @@ function userLoginToEmail(login) {
 }
 
 function getDefaultCc(to) {
-  const primary = String(to || "").trim().toLowerCase();
+  const primaryList = normalizeEmailList(to).split(";").map((email) => email.trim().toLowerCase()).filter(Boolean);
   return Object.keys(getAllAccounts())
     .map(userLoginToEmail)
-    .filter((email, index, list) => email && email !== primary && list.indexOf(email) === index)
+    .filter((email, index, list) => email && !primaryList.includes(email.toLowerCase()) && list.indexOf(email) === index)
     .join(";");
+}
+
+function getEmailRecipients(step, fallback = "") {
+  const setting = normalizeEmailStepSetting(emailSettings?.[step], null);
+  const selectedUsers = (setting.users || []).map(userLoginToEmail).filter(Boolean);
+  const extra = splitEmailLikeList(setting.extra || "").map(userLoginToEmail).filter(Boolean);
+  const configured = [...selectedUsers, ...extra].filter((email, index, list) => email && list.indexOf(email) === index).join(";");
+  return configured || normalizeEmailList(fallback);
 }
 
 function openMailDraft(to, subject, bodyText) {
@@ -3127,14 +3571,14 @@ function openEmailDraft(request, to) {
     { title: "Motivo", content: request.reason },
   ]);
 
-  openMailDraft(to, subject, bodyText);
+  openMailDraft(getEmailRecipients("request", to || userLoginToEmail("jessica.lopes")), subject, bodyText);
 }
 
 function openPartRegistrationEmailDraft(request) {
   const pendingItems = request.items.filter(isPendingRegistrationItem);
   if (pendingItems.length === 0) return;
 
-  const recipients = userLoginToEmail("erik.barreto");
+  const recipients = getEmailRecipients("registration", `${userLoginToEmail("erik.barreto")}; ${userLoginToEmail("bruno.medici")}`);
   const subject = buildEmailSubject(request, "Cadastro de item");
   const targetLabel = getRequestTargetLabel(request);
   const bodyText = buildEmailBody("Solicitação de Cadastro de Item", `Existem itens sem cadastro SAP na solicitação ${request.id}. Cadastre no SAP e informe código e descrição final na aba Cadastro de Item para liberar o Almoxarifado.`, [
@@ -3155,7 +3599,7 @@ function openPartRegistrationEmailDraft(request) {
 function openAlmoxEmailDraft(request, to) {
   const subject = buildEmailSubject(request, "Atendimento Almox");
   const bodyText = buildEmailBody("Relatório de Atendimento - Almoxarifado", `Segue retorno da solicitação ${request.id}, ${getRequestTargetLabel(request).toLowerCase()}.`, [
-    { title: "Resumo da Solicitação", content: `Status: ${statusText[request.status]}\nPrioridade: ${request.priority}\nRequisitante: ${request.requestedBy || "-"}\nManutentor: ${request.maintainer || "-"}` },
+    { title: "Resumo da Solicitação", content: `Status: ${statusText[request.status]}\nPrioridade: ${request.priority}\nSolicitante: ${request.requestedBy || "-"}\nManutentor: ${request.maintainer || "-"}` },
     { title: "Itens", content: formatEmailItems(request.items, (item) => item.quantity, (item) => {
       const pending = Math.max(0, item.quantity - (Number(item.availableQty) || 0) - (Number(item.cdQty) || 0) - getPurchasePendingQty(item));
       return [
@@ -3168,7 +3612,7 @@ function openAlmoxEmailDraft(request, to) {
     { title: "Observação", content: request.response || "Sem observação." },
   ]);
 
-  openMailDraft(to, subject, bodyText);
+  openMailDraft(getEmailRecipients("almox", to || userLoginToEmail(request.requestedByEmail || request.requestedBy)), subject, bodyText);
 }
 
 function openCdEmailDraft(request, to) {
@@ -3184,7 +3628,7 @@ function openCdEmailDraft(request, to) {
     { title: "Anexo", content: request.transferInvoiceName ? `Anexar a NF selecionada: ${request.transferInvoiceName}` : "Anexar a NF de transferência antes do envio final." },
   ]);
 
-  openMailDraft(to, subject, bodyText);
+  openMailDraft(getEmailRecipients("cd", to || userLoginToEmail(request.almoxByEmail || request.almoxBy || "jessica.lopes")), subject, bodyText);
 }
 
 function openApprovalEmailDraft(request, to) {
@@ -3198,7 +3642,7 @@ function openApprovalEmailDraft(request, to) {
     { title: "Observação", content: request.response || "Sem observação." },
   ]);
 
-  openMailDraft(to, subject, bodyText);
+  openMailDraft(getEmailRecipients("approval", to || `${userLoginToEmail("jessica.lopes")}; ${userLoginToEmail("marcio.ferreira")}`), subject, bodyText);
 }
 
 function openPurchaseEmailDraft(request, to) {
@@ -3213,7 +3657,7 @@ function openPurchaseEmailDraft(request, to) {
     ]) : "Nenhum item pendente de compra." },
   ]);
 
-  openMailDraft(to, subject, bodyText);
+  openMailDraft(getEmailRecipients("purchase", to || `${userLoginToEmail("jessica.lopes")}; ${userLoginToEmail(request.requestedByEmail || request.requestedBy)}`), subject, bodyText);
 }
 
 function createProcessMap(request) {
@@ -3224,16 +3668,17 @@ function createProcessMap(request) {
     { key: "atendimento", label: "Almoxarifado", date: request.attendedAt, done: Boolean(request.attendedAt), active: request.status === "solicitacao", requested: true },
     { key: "cd", label: "CD", date: request.cdAt, done: Boolean(request.cdAt), active: request.status === "cd", requested: Boolean(request.cdAt) || request.status === "cd" || request.items.some((item) => getCdPendingQty(item) > 0 || Number(item.cdQty) > 0) },
     { key: "aprovacao", label: "Aprovação", date: request.purchaseApprovedAt, done: Boolean(request.purchaseApprovedAt) || request.status === "reprovado", active: hasPurchaseApprovalPending(request), requested: Boolean(request.purchaseApprovalRequestedAt || request.purchaseApprovedAt) || hasPurchaseApprovalPending(request) },
-    { key: "compra", label: "Compra", date: request.purchaseAt, done: Boolean(request.purchaseArrivedAt || hasPurchaseReceipt(request)), active: getDisplayStatus(request) === "compra", requested: Boolean(request.purchaseAt || request.purchaseOrder || request.sapRequestNumber) || hasApprovedPurchasePending(request) },
+    { key: "compra", label: "Compra", date: request.purchaseAt, done: Boolean(hasPurchaseReceipt(request)), active: getDisplayStatus(request) === "compra" || (getDisplayStatus(request) === "recebimento" && isPurchaseArrivalRegistered(request)), requested: Boolean(request.purchaseAt || request.purchaseOrder || request.sapRequestNumber) || hasApprovedPurchasePending(request) },
     { key: "recebimento", label: "Recebimento", date: request.receiptAt, done: Boolean(request.receiptAt), active: getDisplayStatus(request) === "recebimento", requested: Boolean(request.receiptAt) || getDisplayStatus(request) === "recebimento" },
     { key: "retirado", label: "Retirada", date: request.withdrawnAt, done: request.status === "retirado", active: hasPickupPending(request), requested: Boolean(request.withdrawnAt) || hasPickupPending(request) },
   ];
   return steps
     .map((step) => {
       const active = step.active;
-      const done = step.done;
+      const notRequested = !step.requested;
+      const done = step.done && !notRequested;
       const meta = step.date ? `${formatDate(step.date)} | ${formatDuration(request.createdAt, step.date)}` : step.requested ? "Aguardando" : "Não solicitado";
-      return `<div class="process-step ${active ? "active" : ""} ${done ? "done" : ""}"><strong>${step.label}</strong><span>${meta}</span></div>`;
+      return `<div class="process-step ${active ? "active" : ""} ${done ? "done" : ""} ${notRequested ? "not-requested" : ""}"><strong>${step.label}</strong><span>${meta}</span></div>`;
     })
     .join("");
 }
