@@ -7,7 +7,7 @@ const NOTIFICATION_READ_KEY = "pecas-transporte-notificacoes-lidas";
 const CUSTOM_PARTS_KEY = "pecas-transporte-pecas-cadastradas";
 const PART_REGISTRATIONS_KEY = "pecas-transporte-cadastros-pecas";
 const EMAIL_SETTINGS_KEY = "pecas-transporte-email-config";
-const HISTORY_PURGE_KEY = "manupecas-limpeza-historico-20260812-oficial-02";
+const HISTORY_PURGE_KEY = "manupecas-limpeza-historico-20260812-oficial-03";
 const supabaseClient = window.manuPecasSupabase || null;
 
 const partsCatalog = Array.isArray(globalThis.PARTS_CATALOG) ? globalThis.PARTS_CATALOG : [];
@@ -915,6 +915,9 @@ async function purgeHistoryOnce() {
       const results = await Promise.all([
         supabaseClient.from("manupecas_requests").delete().neq("id", "__never__"),
         supabaseClient.from("manupecas_part_registrations").delete().neq("id", "__never__"),
+        supabaseClient.from("atendimentos_cd").delete().neq("id", "00000000-0000-0000-0000-000000000000"),
+        supabaseClient.from("compras").delete().neq("id", "00000000-0000-0000-0000-000000000000"),
+        supabaseClient.from("recebimentos").delete().neq("id", "00000000-0000-0000-0000-000000000000"),
         supabaseClient.from("solicitacao_itens").delete().neq("id", "00000000-0000-0000-0000-000000000000"),
         supabaseClient.from("solicitacoes").delete().neq("id", "00000000-0000-0000-0000-000000000000"),
       ]);
