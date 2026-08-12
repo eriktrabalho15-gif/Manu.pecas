@@ -6,7 +6,7 @@
     <title>ManuPeças | JTP Transportes</title>
     <link rel="icon" href="./favicon.ico" sizes="any" />
     <link rel="apple-touch-icon" href="./favicon.png" />
-    <link rel="stylesheet" href="./styles.css?v=20260811-tabs-final" />
+    <link rel="stylesheet" href="./styles.css?v=20260812-supabase-status" />
   </head>
   <body data-view="login">
     <section class="login-screen" id="login-screen">
@@ -62,6 +62,7 @@
         </div>
         <div class="session-box">
           <span id="session-label"></span>
+          <span class="supabase-status" id="supabase-status">Supabase: verificando</span>
           <div class="notification-wrap">
             <button class="notification-button" type="button" id="notification-button" aria-label="Notificações" aria-expanded="false">
               <span class="notification-icon">!</span>
@@ -530,6 +531,11 @@
               <label>Número de recebimento / entrada SAP</label>
               <input class="receipt-number" placeholder="Ex.: 5000123456" />
             </div>
+            <div class="field receipt-invoice-field">
+              <label>NF do fornecedor</label>
+              <input class="receipt-invoice" type="file" accept=".pdf,.jpg,.jpeg,.png,.xml" />
+              <small class="receipt-invoice-name"></small>
+            </div>
             <div class="field receipt-password-field">
               <label>Senha do almoxarife</label>
               <input class="receipt-password" type="password" autocomplete="current-password" placeholder="Confirme sua senha" />
@@ -555,7 +561,7 @@
         SUPABASE_PUBLIC_KEY
       );
     </script>
-    <script src="./app.js?v=20260811-flow-review"></script>
+    <script src="./app.js?v=20260812-supabase-status"></script>
   </body>
 </html>
 

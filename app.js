@@ -7,7 +7,7 @@ const NOTIFICATION_READ_KEY = "pecas-transporte-notificacoes-lidas";
 const CUSTOM_PARTS_KEY = "pecas-transporte-pecas-cadastradas";
 const PART_REGISTRATIONS_KEY = "pecas-transporte-cadastros-pecas";
 const EMAIL_SETTINGS_KEY = "pecas-transporte-email-config";
-const HISTORY_PURGE_KEY = "manupecas-limpeza-historico-20260811-oficial-01";
+const HISTORY_PURGE_KEY = "manupecas-limpeza-historico-20260812-oficial-02";
 const supabaseClient = window.manuPecasSupabase || null;
 
 const partsCatalog = Array.isArray(globalThis.PARTS_CATALOG) ? globalThis.PARTS_CATALOG : [];
@@ -72,14 +72,14 @@ const emailStepLabels = {
   pickup: "Retirada",
 };
 const defaultEmailSettings = {
-  request: { users: ["jessica.lopes"], extra: "" },
-  registration: { users: ["erik.barreto", "bruno.medici"], extra: "" },
-  almox: { users: ["matheus.campos"], extra: "" },
-  cd: { users: ["jessica.lopes"], extra: "" },
-  approval: { users: ["jessica.lopes", "marcio.ferreira"], extra: "" },
-  purchase: { users: ["jessica.lopes", "matheus.campos", "rodrigo.araujo"], extra: "" },
-  receipt: { users: ["matheus.campos", "rodrigo.araujo"], extra: "" },
-  pickup: { users: ["matheus.campos"], extra: "" },
+  request: { toUsers: ["jessica.lopes"], ccUsers: [], extraTo: "", extraCc: "" },
+  registration: { toUsers: ["erik.barreto", "bruno.medici"], ccUsers: [], extraTo: "", extraCc: "" },
+  almox: { toUsers: ["matheus.campos"], ccUsers: [], extraTo: "", extraCc: "" },
+  cd: { toUsers: ["jessica.lopes"], ccUsers: [], extraTo: "", extraCc: "" },
+  approval: { toUsers: ["jessica.lopes", "marcio.ferreira"], ccUsers: [], extraTo: "", extraCc: "" },
+  purchase: { toUsers: ["jessica.lopes", "matheus.campos"], ccUsers: ["rodrigo.araujo"], extraTo: "", extraCc: "" },
+  receipt: { toUsers: ["matheus.campos"], ccUsers: ["rodrigo.araujo"], extraTo: "", extraCc: "" },
+  pickup: { toUsers: ["matheus.campos"], ccUsers: [], extraTo: "", extraCc: "" },
 };
 
 const fixedUserCorporateEmails = {
@@ -102,10 +102,12 @@ let currentFilter = "solicitacao";
 let currentPage = "request";
 let activePartRegistrationInput = null;
 let userAccessFeedback = null;
+let pendingSupabaseWrites = [];
 
 const body = document.body;
 const loginForm = document.querySelector("#login-form");
 const sessionLabel = document.querySelector("#session-label");
+const supabaseStatus = document.querySelector("#supabase-status");
 const userGreeting = document.querySelector("#user-greeting");
 const notificationButton = document.querySelector("#notification-button");
 const notificationCount = document.querySelector("#notification-count");
@@ -340,36 +342,63 @@ userForm.addEventListener("submit", (event) => {
   renderUsers();
 });
 
-emailSettingsForm?.addEventListener("submit", (event) => {
+emailSettingsForm?.addEventListener("submit", async (event) => {
   event.preventDefault();
   if (currentUser?.role !== "admin") return;
+  emailSettingsMessage.textContent = "Gravando configurações...";
+  emailSettingsMessage.classList.remove("error", "success");
   emailSettings = Object.fromEntries(emailStepKeys.map((key) => {
-    const users = Array.from(emailSettingsForm.querySelectorAll(`[data-email-step="${key}"][data-user-login]:checked`)).map((input) => input.dataset.userLogin);
-    const extra = emailSettingsForm.querySelector(`[data-email-step="${key}"][data-extra-email]`)?.value || "";
-    return [key, { users, extra }];
+    const selected = Array.from(emailSettingsForm.querySelectorAll(`[data-email-step="${key}"][data-user-login]:checked`));
+    const toUsers = selected.filter((input) => input.value === "to").map((input) => input.dataset.userLogin);
+    const ccUsers = selected.filter((input) => input.value === "cc").map((input) => input.dataset.userLogin);
+    const extraTo = emailSettingsForm.querySelector(`[data-email-step="${key}"][data-extra-to]`)?.value || "";
+    const extraCc = emailSettingsForm.querySelector(`[data-email-step="${key}"][data-extra-cc]`)?.value || "";
+    return [key, { toUsers, ccUsers, extraTo, extraCc }];
   }));
-  saveEmailSettings();
+  const result = await saveEmailSettings();
   renderEmailSettings();
-  emailSettingsMessage.textContent = "Configurações gravadas com sucesso.";
+  emailSettingsMessage.textContent = result.remote
+    ? "Configurações gravadas no Supabase com sucesso."
+    : result.ok
+    ? "Configurações gravadas neste aparelho. Supabase não conectado."
+    : `Não foi possível gravar no Supabase: ${result.error}`;
+  emailSettingsMessage.classList.toggle("success", result.ok);
+  emailSettingsMessage.classList.toggle("error", !result.ok);
   setTimeout(() => {
     emailSettingsMessage.textContent = "";
+    emailSettingsMessage.classList.remove("error", "success");
   }, 2500);
 });
 
 emailSettingsForm?.addEventListener("click", (event) => {
   const button = event.target.closest("[data-email-toggle-all]");
-  if (!button) return;
-  const key = button.dataset.emailToggleAll;
-  const checkboxes = Array.from(emailSettingsForm.querySelectorAll(`[data-email-step="${key}"][data-user-login]`));
-  const shouldCheck = checkboxes.some((input) => !input.checked);
-  checkboxes.forEach((input) => {
-    input.checked = shouldCheck;
-  });
-  updateEmailStepSummary(key);
+  const roleButton = event.target.closest("[data-email-toggle-role]");
+  if (button) {
+    event.preventDefault();
+    event.stopPropagation();
+    const key = button.dataset.emailToggleAll;
+    const toRadios = Array.from(emailSettingsForm.querySelectorAll(`[data-email-step="${key}"][data-user-login][value="to"]`));
+    const shouldSelectAll = toRadios.some((input) => !input.checked);
+    toRadios.forEach((input) => {
+      input.checked = shouldSelectAll;
+    });
+    updateEmailStepSummary(key);
+  }
+  if (roleButton) {
+    event.preventDefault();
+    event.stopPropagation();
+    const key = roleButton.dataset.emailStep;
+    const role = roleButton.dataset.emailToggleRole;
+    const mode = roleButton.dataset.emailMode;
+    emailSettingsForm.querySelectorAll(`[data-email-step="${key}"][data-user-role="${role}"][value="${mode}"]`).forEach((input) => {
+      input.checked = true;
+    });
+    updateEmailStepSummary(key);
+  }
 });
 
 emailSettingsForm?.addEventListener("change", (event) => {
-  const input = event.target.closest("[data-email-step][data-user-login]");
+  const input = event.target.closest("[data-email-step][data-user-login], [data-email-step][data-extra-to], [data-email-step][data-extra-cc]");
   if (!input) return;
   updateEmailStepSummary(input.dataset.emailStep);
 });
@@ -749,10 +778,11 @@ function normalizeStatus(status, items = []) {
 
 function normalizeItem(item, requestStatus = "solicitacao") {
   const quantity = Number(item.quantity) || 1;
+  const hasSapCode = hasRealSapCode(item);
   const pendingData = {
-    isPendingRegistration: Boolean(item.isPendingRegistration),
-    pendingRegistrationId: item.pendingRegistrationId || "",
-    pendingOriginalCode: item.pendingOriginalCode || "",
+    isPendingRegistration: !hasSapCode && Boolean(item.isPendingRegistration),
+    pendingRegistrationId: !hasSapCode ? item.pendingRegistrationId || "" : "",
+    pendingOriginalCode: !hasSapCode ? item.pendingOriginalCode || "" : "",
   };
   if (Number.isFinite(Number(item.availableQty)) && Number.isFinite(Number(item.purchaseQty))) {
     return { ...item, ...pendingData, quantity, availableQty: Number(item.availableQty), cdQty: Number(item.cdQty) || 0, purchaseQty: Number(item.purchaseQty), withdrawnQty: Number(item.withdrawnQty) || 0, purchaseApproval: item.purchaseApproval || "" };
@@ -770,9 +800,13 @@ function normalizeItem(item, requestStatus = "solicitacao") {
 }
 
 async function syncFromSupabase() {
-  if (!supabaseClient) return;
+  if (!supabaseClient) {
+    setSupabaseStatus("offline", "Supabase: não conectado");
+    return;
+  }
 
   try {
+    setSupabaseStatus("saving", "Supabase: sincronizando");
     const [remoteRequests, remoteUsers, remoteDeletedUsers, remoteCustomParts, remotePartRegistrations, remoteStructuredParts, remoteEmailSettings] = await Promise.all([
       loadSupabaseRows("manupecas_requests", "id"),
       loadSupabaseRows("manupecas_users", "email"),
@@ -819,9 +853,50 @@ async function syncFromSupabase() {
       emailSettings = normalizeEmailSettings(remoteEmailSettings);
       localStorage.setItem(EMAIL_SETTINGS_KEY, JSON.stringify(emailSettings));
     }
+    setSupabaseStatus("ok", "Supabase: conectado");
   } catch (error) {
+    setSupabaseStatus("error", "Supabase: erro de conexão");
     console.warn("Supabase indisponível. Usando dados locais.", error);
   }
+}
+
+function setSupabaseStatus(status, text) {
+  if (!supabaseStatus) return;
+  supabaseStatus.textContent = text;
+  supabaseStatus.dataset.status = status;
+}
+
+function trackSupabaseWrite(promise, label = "dados") {
+  if (!promise || typeof promise.then !== "function") return promise;
+  setSupabaseStatus("saving", "Supabase: salvando");
+  const tracked = promise
+    .then((result) => {
+      const error = Array.isArray(result)
+        ? result.find((item) => item?.error)?.error
+        : result?.error;
+      if (error) {
+        setSupabaseStatus("error", `Supabase: erro ao salvar ${label}`);
+        console.warn(`Erro ao salvar ${label}:`, error.message || error);
+      } else {
+        setSupabaseStatus("ok", "Supabase: salvo");
+      }
+      return result;
+    })
+    .catch((error) => {
+      setSupabaseStatus("error", `Supabase: erro ao salvar ${label}`);
+      console.warn(`Erro ao salvar ${label}:`, error);
+      return { error };
+    })
+    .finally(() => {
+      pendingSupabaseWrites = pendingSupabaseWrites.filter((item) => item !== tracked);
+    });
+  pendingSupabaseWrites.push(tracked);
+  return tracked;
+}
+
+async function flushSupabaseWrites() {
+  if (pendingSupabaseWrites.length === 0) return;
+  await Promise.allSettled([...pendingSupabaseWrites]);
 }
 
 async function purgeHistoryOnce() {
@@ -902,6 +977,7 @@ async function loadStructuredRequests() {
       code: item.codigo_sap || "",
       description: item.descricao || "Peça sem descrição",
       quantity: Number(item.quantidade_solicitada) || 1,
+      almoxQty: Number(item.quantidade_almox) || 0,
       availableQty: Number(item.quantidade_almox) || 0,
       cdQty: Number(item.quantidade_cd) || 0,
       purchaseQty: Number(item.quantidade_compra) || 0,
@@ -953,11 +1029,10 @@ async function loadEmailSettingsFromSupabase() {
 }
 
 function upsertSupabaseRows(table, keyField, rows) {
-  if (!supabaseClient) return;
+  if (!supabaseClient) return Promise.resolve();
   const payload = rows.map((row) => ({ [keyField]: row[keyField], data: row, updated_at: new Date().toISOString() }));
-  supabaseClient.from(table).upsert(payload, { onConflict: keyField }).then(({ error }) => {
-    if (error) console.warn(`Erro ao salvar ${table}:`, error.message);
-  });
+  if (payload.length === 0) return Promise.resolve();
+  return trackSupabaseWrite(supabaseClient.from(table).upsert(payload, { onConflict: keyField }), table);
 }
 
 async function mirrorRequestsToStructuredTables(rows) {
@@ -1041,34 +1116,32 @@ function mirrorCustomPartsToStructuredTable(parts) {
     }))
     .filter((part) => part.codigo_sap && part.descricao);
   if (payload.length === 0) return;
-  supabaseClient.from("itens").upsert(payload, { onConflict: "codigo_sap" }).then(({ error }) => {
-    if (error) console.warn("Erro ao salvar itens estruturados:", error.message);
-  });
+  return trackSupabaseWrite(supabaseClient.from("itens").upsert(payload, { onConflict: "codigo_sap" }), "itens");
 }
 
 function replaceSupabaseDeletedUsers() {
   if (!supabaseClient) return;
-  supabaseClient.from("manupecas_deleted_users").delete().neq("email", "__never__").then(({ error }) => {
+  return trackSupabaseWrite(supabaseClient.from("manupecas_deleted_users").delete().neq("email", "__never__").then(({ error }) => {
     if (error) {
       console.warn("Erro ao limpar usuários excluídos:", error.message);
-      return;
+      return { error };
     }
-    if (deletedUsers.length === 0) return;
-    supabaseClient.from("manupecas_deleted_users").upsert(deletedUsers.map((email) => ({ email, updated_at: new Date().toISOString() })), { onConflict: "email" });
-  });
+    if (deletedUsers.length === 0) return { error: null };
+    return supabaseClient.from("manupecas_deleted_users").upsert(deletedUsers.map((email) => ({ email, updated_at: new Date().toISOString() })), { onConflict: "email" });
+  }), "usuários excluídos");
 }
 
 function deleteSupabaseRow(table, keyField, keyValue) {
   if (!supabaseClient) return;
-  supabaseClient.from(table).delete().eq(keyField, keyValue).then(({ error }) => {
-    if (error) console.warn(`Erro ao excluir ${table}:`, error.message);
-  });
+  return trackSupabaseWrite(supabaseClient.from(table).delete().eq(keyField, keyValue), table);
 }
 
 function saveRequests() {
   localStorage.setItem(REQUESTS_KEY, JSON.stringify(requests));
-  upsertSupabaseRows("manupecas_requests", "id", requests);
-  mirrorRequestsToStructuredTables(requests);
+  return Promise.allSettled([
+    upsertSupabaseRows("manupecas_requests", "id", requests),
+    trackSupabaseWrite(mirrorRequestsToStructuredTables(requests), "solicitações estruturadas"),
+  ]);
 }
 
 function loadManagedUsers() {
@@ -1126,15 +1199,26 @@ function normalizeEmailSettings(settings) {
 }
 
 function normalizeEmailStepSetting(setting, fallback) {
-  if (Array.isArray(setting)) return { users: uniqueLogins(setting), extra: "" };
+  if (Array.isArray(setting)) return { toUsers: uniqueLogins(setting), ccUsers: [], extraTo: "", extraCc: "" };
   if (setting && typeof setting === "object") {
+    const legacyUsers = uniqueLogins(setting.users || []);
+    const legacyExtra = normalizeEmailList(setting.extra || "");
     return {
-      users: uniqueLogins(setting.users || []),
-      extra: normalizeEmailList(setting.extra || ""),
+      toUsers: uniqueLogins(setting.toUsers || legacyUsers),
+      ccUsers: uniqueLogins(setting.ccUsers || []),
+      extraTo: normalizeEmailList(setting.extraTo || legacyExtra),
+      extraCc: normalizeEmailList(setting.extraCc || ""),
     };
   }
   const converted = splitEmailLikeList(setting || "");
-  if (converted.length === 0) return { users: uniqueLogins(fallback?.users || []), extra: normalizeEmailList(fallback?.extra || "") };
+  if (converted.length === 0) {
+    return {
+      toUsers: uniqueLogins(fallback?.toUsers || fallback?.users || []),
+      ccUsers: uniqueLogins(fallback?.ccUsers || []),
+      extraTo: normalizeEmailList(fallback?.extraTo || fallback?.extra || ""),
+      extraCc: normalizeEmailList(fallback?.extraCc || ""),
+    };
+  }
   return convertEmailsToUserSetting(converted);
 }
 
@@ -1154,18 +1238,18 @@ function uniqueLogins(values) {
 
 function convertEmailsToUserSetting(values) {
   const accountsMap = getAllAccounts();
-  const users = [];
-  const extra = [];
+  const toUsers = [];
+  const extraTo = [];
   values.forEach((value) => {
     const normalizedValue = String(value || "").trim().toLowerCase();
     const login = normalizeLogin(normalizedValue);
     const matchedLogin = Object.entries(accountsMap).find(([accountLogin, account]) => {
       return accountLogin === login || normalizeCorporateEmail(account.corporateEmail, accountLogin) === normalizedValue;
     })?.[0];
-    if (matchedLogin) users.push(matchedLogin);
-    else extra.push(userLoginToEmail(value));
+    if (matchedLogin) toUsers.push(matchedLogin);
+    else extraTo.push(userLoginToEmail(value));
   });
-  return { users: uniqueLogins(users), extra: normalizeEmailList(extra.join(";")) };
+  return { toUsers: uniqueLogins(toUsers), ccUsers: [], extraTo: normalizeEmailList(extraTo.join(";")), extraCc: "" };
 }
 
 function normalizeEmailList(value) {
@@ -1176,16 +1260,18 @@ function normalizeEmailList(value) {
     .join("; ");
 }
 
-function saveEmailSettings() {
+async function saveEmailSettings() {
   emailSettings = normalizeEmailSettings(emailSettings);
   localStorage.setItem(EMAIL_SETTINGS_KEY, JSON.stringify(emailSettings));
-  if (!supabaseClient) return;
-  supabaseClient
+  if (!supabaseClient) return { ok: true, remote: false, error: "" };
+  const { error } = await supabaseClient
     .from("manupecas_email_settings")
-    .upsert({ id: "default", data: emailSettings, updated_at: new Date().toISOString() }, { onConflict: "id" })
-    .then(({ error }) => {
-      if (error) console.warn("Erro ao salvar configuração de e-mail:", error.message);
-    });
+    .upsert({ id: "default", data: emailSettings, updated_at: new Date().toISOString() }, { onConflict: "id" });
+  if (error) {
+    console.warn("Erro ao salvar configuração de e-mail:", error.message);
+    return { ok: false, remote: true, error: error.message };
+  }
+  return { ok: true, remote: true, error: "" };
 }
 
 function normalizeLogin(login) {
@@ -1448,6 +1534,10 @@ function makeCode() {
 function render() {
   if (!currentUser) return;
 
+  if (currentUser.role === "almox" && currentFilter === "cd") {
+    currentFilter = "solicitacao";
+  }
+
   updateCopy();
   updateMetrics();
   updateNotificationBadge();
@@ -1494,8 +1584,9 @@ function render() {
       return request.status === "atendimento" || hasPickupPending(request);
     }
     if (currentUser.role === "almox" && currentFilter === "compra") {
-      return request.status === "compra" || hasApprovedPurchasePending(request);
+      return (request.status === "compra" || hasApprovedPurchasePending(request)) && !isPurchaseArrivalRegistered(request);
     }
+    if (currentUser.role === "almox" && currentFilter === "cd") return false;
     if (currentFilter === "solicitacao") return request.status === "solicitacao" || request.status === "cadastro";
     return request.status === currentFilter;
   });
@@ -1517,13 +1608,7 @@ function createCard(request) {
   const pickupOnlyView = currentFilter === "atendimento" && (currentUser.role === "almox" || currentUser.role === "pcm") && hasPickupPending(request);
   const receiptOnlyView = currentFilter === "recebimento" && getDisplayStatus(request) === "recebimento";
   const purchaseOnlyView = currentFilter === "compra" && currentUser.role === "almox";
-  const displayItems = pickupOnlyView
-    ? request.items.filter(isPickupItemPending)
-    : receiptOnlyView
-    ? request.items.filter((item) => isReceiptItemPending(request, item))
-    : purchaseOnlyView
-    ? request.items.filter((item) => item.purchaseApproval === "approved" && getPurchasePendingQty(item) > 0)
-    : request.items;
+  const displayItems = request.items;
   const status = card.querySelector(".status-pill");
   const response = card.querySelector(".response");
   const note = card.querySelector("textarea");
@@ -1546,12 +1631,17 @@ function createCard(request) {
   const purchaseArrivalSaveButton = card.querySelector(".purchase-arrival-save");
   const transferInvoiceInput = card.querySelector(".transfer-invoice");
   const invoiceName = card.querySelector(".invoice-name");
+  const receiptInvoiceInput = card.querySelector(".receipt-invoice");
+  const receiptInvoiceName = card.querySelector(".receipt-invoice-name");
   const receiptNumberInput = card.querySelector(".receipt-number");
   const receiptPasswordInput = card.querySelector(".receipt-password");
   const receiptMessage = card.querySelector(".receipt-message");
 
-  const displayStatus = pickupOnlyView ? "atendimento" : getDisplayStatus(request);
-  const isReceiptFlow = displayStatus === "recebimento";
+  const displayStatus = pickupOnlyView ? "atendimento" : currentFilter === "compra" && request.status === "compra" ? "compra" : getDisplayStatus(request);
+  const isReceiptFlow = currentFilter === "recebimento" && displayStatus === "recebimento";
+  const isAlmoxPurchaseQueue = request.status === "compra" && currentUser.role === "almox" && currentFilter === "compra";
+  const isBuyerPurchaseQueue = request.status === "compra" && currentUser.role === "compras";
+  const isAlmoxReceiptQueue = isReceiptFlow && currentUser.role === "almox" && currentFilter === "recebimento";
   status.textContent = getRequestStatusText(request, displayStatus);
   status.className = `status-pill status-${displayStatus}`;
   card.querySelector(".request-summary").addEventListener("click", () => card.classList.toggle("expanded"));
@@ -1580,23 +1670,24 @@ function createCard(request) {
   buyerNoteInput.readOnly = currentUser.role !== "compras";
   deliveryDateInput.value = request.deliveryDate || "";
   arrivalDateInput.value = request.purchaseArrivedDate || "";
+  const arrivalField = card.querySelector(".purchase-arrival-field");
+  const arrivalLabel = arrivalField.querySelector("label");
+  if (arrivalLabel) arrivalLabel.textContent = "Data de chegada / recebimento";
   invoiceName.textContent = request.transferInvoiceName ? `NF anexada: ${request.transferInvoiceName}` : "";
+  receiptInvoiceName.textContent = request.receiptInvoiceName ? `NF fornecedor anexada: ${request.receiptInvoiceName}` : "";
   receiptNumberInput.value = request.receiptNumber || "";
   receiptMessage.textContent = request.receiptNumber ? `Recebimento registrado: ${request.receiptNumber}` : "";
   card.querySelector(".transfer-invoice-field").hidden = true;
   card.querySelector(".receipt-number-field").hidden = !isReceiptFlow;
+  card.querySelector(".receipt-invoice-field").hidden = !isAlmoxReceiptQueue;
   card.querySelector(".receipt-password-field").hidden = !isReceiptFlow;
   deliveryDateInput.closest(".field").hidden = true;
-  card.querySelector(".purchase-arrival-field").hidden = !(isReceiptFlow || (request.status === "compra" && currentUser.role === "almox" && request.purchaseOrder && hasApprovedPurchasePending(request)));
-  arrivalDateInput.disabled = isReceiptFlow;
+  arrivalField.hidden = !isAlmoxReceiptQueue;
+  arrivalDateInput.disabled = !isAlmoxReceiptQueue;
   purchaseWorkflow.classList.remove("active");
   card.querySelector(".process-map").innerHTML = createProcessMap(pickupOnlyView ? { ...request, status: "atendimento" } : request);
 
   request.items.forEach((item, index) => {
-    if (pickupOnlyView && !isPickupItemPending(item)) return;
-    if (receiptOnlyView && !isReceiptItemPending(request, item)) return;
-    if (purchaseOnlyView && !(item.purchaseApproval === "approved" && getPurchasePendingQty(item) > 0)) return;
-    if (currentUser.role === "cd" && getCdPendingQty(item) <= 0) return;
     const li = document.createElement("li");
     li.innerHTML = `
       <strong>${item.code}</strong>
@@ -1620,7 +1711,11 @@ function createCard(request) {
     `;
     partsList.append(li);
     if (request.status !== "cadastro" && request.status !== "compra" && request.status !== "aprovacao" && request.status !== "recebimento" && !pickupMode) {
-      fulfillmentList.append(currentUser.role === "cd" ? createCdFulfillmentLine(item, index) : createFulfillmentLine(item, index));
+      if (currentUser.role === "cd") {
+        if (getCdPendingQty(item) > 0) fulfillmentList.append(createCdFulfillmentLine(item, index));
+      } else {
+        fulfillmentList.append(createFulfillmentLine(item, index));
+      }
     }
   });
 
@@ -1705,11 +1800,11 @@ function createCard(request) {
     ? purchaseLines.map((item) => {
       const cdReceiptQty = Number(item.cdQty) || 0;
       const purchaseReceiptQty = isPurchaseArrivalRegistered(request) && item.purchaseApproval === "approved" ? getPurchasePendingQty(item) : 0;
+      const transferInvoiceMarkup = cdReceiptQty > 0 ? getItemInvoiceMarkup(request, item, "transfer") : "";
       const receiptNotes = isReceiptFlow
         ? [
           cdReceiptQty > 0 ? `CD: ${cdReceiptQty} un.` : "",
           purchaseReceiptQty > 0 ? `Compra: ${purchaseReceiptQty} un.` : "",
-          cdReceiptQty > 0 ? `NF transferência: ${request.transferInvoiceName || "não informada"}` : "",
         ].filter(Boolean).join(" | ")
         : "";
       return `<div>
@@ -1717,6 +1812,7 @@ function createCard(request) {
         <span>${item.description}</span>
         <em>${isReceiptFlow ? `${cdReceiptQty + purchaseReceiptQty} un. para entrada e recebimento` : `${getPurchasePendingQty(item)} un. para compra`}</em>
         ${receiptNotes ? `<small>${receiptNotes}</small>` : ""}
+        ${transferInvoiceMarkup ? `<small>NF transferência: ${transferInvoiceMarkup}</small>` : ""}
       </div>`;
     }).join("")
     : `<div><span>${isReceiptFlow ? "Nenhum item pendente de entrada e recebimento." : "Nenhum item pendente de compra."}</span></div>`;
@@ -1725,15 +1821,19 @@ function createCard(request) {
   sapRequestSaveButton.addEventListener("click", () => saveSapRequestNumber(request.id, card));
   purchaseArrivalSaveButton.addEventListener("click", () => registerPurchaseArrival(request.id, card));
   purchaseArrivalButton.addEventListener("click", () => confirmReceiptEntry(request.id, card));
+  receiptInvoiceInput.addEventListener("change", () => {
+    receiptInvoiceName.textContent = receiptInvoiceInput.files.length ? `NF fornecedor selecionada: ${receiptInvoiceInput.files[0].name}` : request.receiptInvoiceName ? `NF fornecedor anexada: ${request.receiptInvoiceName}` : "";
+  });
   purchaseSaveButton.textContent = request.purchaseOrder ? "Atualizar previsão de entrega" : "Salvar pedido de compra";
-  purchaseSaveButton.hidden = request.status !== "compra" || currentUser.role !== "compras";
-  purchaseEmailButton.hidden = request.status !== "compra" || currentUser.role !== "compras";
-  sapRequestSaveButton.hidden = request.status !== "compra" || currentUser.role !== "almox" || Boolean(request.sapRequestNumber);
-  purchaseArrivalSaveButton.hidden = request.status !== "compra" || currentUser.role !== "almox" || !request.purchaseOrder || !hasApprovedPurchasePending(request);
-  purchaseArrivalButton.hidden = !isReceiptFlow || currentUser.role !== "almox";
+  purchaseArrivalSaveButton.textContent = "Item chegou ao Almoxarifado";
+  purchaseSaveButton.hidden = !isBuyerPurchaseQueue;
+  purchaseEmailButton.hidden = !isBuyerPurchaseQueue;
+  sapRequestSaveButton.hidden = !isAlmoxPurchaseQueue || Boolean(request.sapRequestNumber);
+  purchaseArrivalSaveButton.hidden = !isAlmoxPurchaseQueue || !request.purchaseOrder || !hasApprovedPurchasePending(request);
+  purchaseArrivalButton.hidden = !isAlmoxReceiptQueue;
   sapRequestInput.closest(".field").hidden = isReceiptFlow && !request.sapRequestNumber;
   purchaseOrderInput.closest(".field").hidden = currentUser.role !== "compras" && !request.purchaseOrder;
-  deliveryDateInput.closest(".field").hidden = request.status !== "compra" || currentUser.role !== "compras";
+  deliveryDateInput.closest(".field").hidden = !isBuyerPurchaseQueue;
   buyerNoteInput.closest(".field").hidden = currentUser.role !== "compras" && !request.buyerNote;
   purchaseSaveButton.disabled = currentUser.role === "compras" && !request.sapRequestNumber;
   purchaseSaveButton.title = request.sapRequestNumber ? "" : "Aguardando o Almoxarifado informar a solicitação SAP";
@@ -1744,16 +1844,44 @@ function createCard(request) {
   purchaseArrivalButton.title = hasReceiptLine ? "Confirmar recebimento, entrada SAP e liberar retirada" : "Aguardando item recebido do CD ou compra com data de chegada";
 
   if (pickupMode) {
+    const actionGrid = card.querySelector(".action-grid");
+    const pickupFields = document.createElement("div");
+    pickupFields.className = "pickup-confirmation-fields";
+    pickupFields.innerHTML = `
+      <label class="field">
+        Número da requisição Praxio
+        <input class="pickup-praxio" type="text" value="${escapeAttr(request.praxioRequisition || "")}" placeholder="Ex.: 123456" />
+      </label>
+      <label class="field">
+        Quem está retirando
+        <input class="pickup-person" type="text" value="${escapeAttr(request.withdrawnPerson || "")}" placeholder="Nome e sobrenome" />
+      </label>
+      <small class="pickup-message"></small>
+    `;
+    actionGrid.before(pickupFields);
     const doneButton = document.createElement("button");
     doneButton.className = "action reset";
     doneButton.type = "button";
     doneButton.textContent = "Confirmar retirada do PCM";
     doneButton.addEventListener("click", () => {
+      const praxio = pickupFields.querySelector(".pickup-praxio").value.trim();
+      const person = pickupFields.querySelector(".pickup-person").value.trim();
+      const message = pickupFields.querySelector(".pickup-message");
+      if (!praxio) {
+        message.textContent = "Informe o número da requisição Praxio.";
+        pickupFields.querySelector(".pickup-praxio").focus();
+        return;
+      }
+      if (!person) {
+        message.textContent = "Informe quem está retirando.";
+        pickupFields.querySelector(".pickup-person").focus();
+        return;
+      }
       if (confirmAlmoxPassword()) {
-        markWithdrawn(request.id, note.value || "Itens retirados pelo PCM.");
+        markWithdrawn(request.id, note.value || "Itens retirados pelo PCM.", { praxio, person });
       }
     });
-    card.querySelector(".action-grid").append(doneButton);
+    actionGrid.append(doneButton);
   }
 
   return card;
@@ -1851,7 +1979,7 @@ function saveFulfillment(id, card, shouldEmail) {
     const cdPendingQty = clampQty(row.querySelector('[name="cdPendingQty"]').value, remaining);
     const cdQty = 0;
     const purchaseQty = Math.max(0, remaining - cdPendingQty);
-    return { ...item, availableQty, cdQty, purchaseQty, cdPendingQty };
+    return { ...item, almoxQty: availableQty, availableQty, cdQty, purchaseQty, cdPendingQty };
   });
 
   const status = calculateAlmoxStatus(updatedItems);
@@ -1879,6 +2007,7 @@ function saveFulfillment(id, card, shouldEmail) {
 }
 
 async function saveCdFulfillment(id, card, shouldEmail) {
+  if (currentUser.role !== "cd") return;
   const request = requests.find((item) => item.id === id);
   if (!request) return;
 
@@ -1956,7 +2085,6 @@ function savePurchaseOrder(id, card, shouldEmail) {
     card.querySelector(".purchase-order").focus();
     return;
   }
-  const hasCdReceiptPending = request.items.some((item) => Number(item.cdQty) > 0);
   const updatedRequest = {
     ...request,
     items: request.items.map((item) => (item.purchaseApproval === "approved" ? { ...item, purchaseQty: getPurchasePendingQty(item) } : item)),
@@ -1966,14 +2094,14 @@ function savePurchaseOrder(id, card, shouldEmail) {
     response: deliveryDate
       ? `Pedido de compra registrado. Pedido: ${purchaseOrder}. Previsão de entrega: ${formatDateOnly(deliveryDate)}. Aguardando chegada.`
       : `Itens pendentes enviados para compra no SAP. Pedido: ${purchaseOrder}. Pendente previsão de entrega.`,
-    status: hasCdReceiptPending ? "recebimento" : "compra",
+    status: "compra",
     purchaseAt: request.purchaseAt || new Date().toISOString(),
   };
 
   requests = requests.map((item) => (item.id === id ? updatedRequest : item));
   saveRequests();
 
-  if (shouldEmail && purchaseOrder) {
+  if (purchaseOrder) {
     openPurchaseEmailDraft(updatedRequest, "");
   }
 
@@ -2006,7 +2134,11 @@ function registerPurchaseArrival(id, card) {
   if (currentUser.role !== "almox") return;
   const request = requests.find((item) => item.id === id);
   if (!request) return;
-  const arrivedDate = card.querySelector(".arrival-date").value || getTodayDateInputValue();
+  if (!request.purchaseOrder) {
+    window.alert("Aguardando Compras informar o pedido de compra.");
+    return;
+  }
+  const arrivedDate = getTodayDateInputValue();
   const now = new Date().toISOString();
   const updatedRequest = {
     ...request,
@@ -2019,14 +2151,18 @@ function registerPurchaseArrival(id, card) {
 
   requests = requests.map((item) => (item.id === id ? updatedRequest : item));
   saveRequests();
+  openPurchaseArrivalEmailDraft(updatedRequest, "");
   render();
 }
 
-function confirmReceiptEntry(id, card) {
+async function confirmReceiptEntry(id, card) {
   const request = requests.find((item) => item.id === id);
   if (!request) return;
 
   const receiptNumber = card.querySelector(".receipt-number").value.trim();
+  const purchaseArrivedDate = card.querySelector(".arrival-date").value;
+  const receiptInvoiceInput = card.querySelector(".receipt-invoice");
+  const selectedReceiptInvoice = receiptInvoiceInput?.files?.[0] || null;
   const password = card.querySelector(".receipt-password").value;
   const message = card.querySelector(".receipt-message");
   const account = getAllAccounts()[currentUser.email];
@@ -2036,14 +2172,20 @@ function confirmReceiptEntry(id, card) {
     return;
   }
 
+  if (!purchaseArrivedDate) {
+    message.textContent = "Informe a data de chegada / recebimento.";
+    return;
+  }
+
   if (!account || account.password !== password) {
     message.textContent = "Senha incorreta. O recebimento não foi registrado.";
     return;
   }
 
-  const today = getTodayDateInputValue();
-  const purchaseArrivedDate = request.purchaseArrivedDate || card.querySelector(".arrival-date").value || today;
+  const receiptInvoiceName = selectedReceiptInvoice?.name || request.receiptInvoiceName || "";
+  const receiptInvoiceDataUrl = selectedReceiptInvoice ? await readFileAsDataUrl(selectedReceiptInvoice) : request.receiptInvoiceDataUrl || "";
   const now = new Date().toISOString();
+  const hadPurchaseArrival = isPurchaseArrivalRegistered(request);
   const receiptCodes = new Set(getReceiptPendingItems(request).map((item) => item.code));
   const items = request.items.map((item) => {
     if (!receiptCodes.has(item.code)) return item;
@@ -2066,9 +2208,11 @@ function confirmReceiptEntry(id, card) {
     items: hasApprovalPendingAfterReceipt
       ? items.map((item) => (getPurchaseBaseQty(item) > 0 ? { ...item, purchaseApproval: item.purchaseApproval || "pending" } : item))
       : items,
-    purchaseArrivedDate,
-    purchaseArrivedAt: now,
+    purchaseArrivedDate: hadPurchaseArrival ? purchaseArrivedDate : request.purchaseArrivedDate || "",
+    purchaseArrivedAt: hadPurchaseArrival ? request.purchaseArrivedAt || now : request.purchaseArrivedAt || "",
     receiptNumber,
+    receiptInvoiceName,
+    receiptInvoiceDataUrl,
     receiptAt: now,
     receiptBy: currentUser.name || currentUser.label,
     receiptByEmail: currentUser.email,
@@ -2082,6 +2226,7 @@ function confirmReceiptEntry(id, card) {
 
   requests = requests.map((item) => (item.id === id ? updatedRequest : item));
   saveRequests();
+  openReceiptEmailDraft(updatedRequest, "");
   render();
 }
 
@@ -2109,7 +2254,7 @@ function confirmAlmoxPassword() {
   return true;
 }
 
-function markWithdrawn(id, response) {
+function markWithdrawn(id, response, pickupData = {}) {
   requests = requests.map((request) => {
     if (request.id !== id) return request;
     const now = new Date().toISOString();
@@ -2119,7 +2264,18 @@ function markWithdrawn(id, response) {
     });
     const allWithdrawn = items.every((item) => getWithdrawnQty(item) >= (Number(item.quantity) || 0));
     const nextStatus = allWithdrawn ? "retirado" : request.status;
-    return { ...request, items, status: nextStatus, response, pickupAt: request.pickupAt || now, withdrawnAt: allWithdrawn ? now : request.withdrawnAt || "" };
+    return {
+      ...request,
+      items,
+      status: nextStatus,
+      response,
+      praxioRequisition: pickupData.praxio || request.praxioRequisition || "",
+      withdrawnPerson: pickupData.person || request.withdrawnPerson || "",
+      withdrawnConfirmedBy: currentUser.name || currentUser.label,
+      withdrawnConfirmedByEmail: currentUser.email,
+      pickupAt: request.pickupAt || now,
+      withdrawnAt: allWithdrawn ? now : request.withdrawnAt || "",
+    };
   });
   saveRequests();
   render();
@@ -2245,11 +2401,14 @@ function getReceiptPendingItems(request) {
 
 function getDisplayStatus(request) {
   if (!request) return "solicitacao";
+  const hasPendingRegistration = request.items.some(isPendingRegistrationItem);
   const hasCdPending = request.items.some((item) => getCdPendingQty(item) > 0);
   const hasPurchasePending = request.items.some((item) => getPurchasePendingQty(item) > 0);
   const hasPendingApproval = hasPurchaseApprovalPending(request);
   const hasCdReceipt = request.items.some((item) => Number(item.cdQty) > 0);
   const hasReceiptPending = getReceiptPendingItems(request).length > 0;
+  if (request.status === "cadastro" && hasPendingRegistration) return "cadastro";
+  if (request.status === "cadastro" && !hasPendingRegistration) return calculateStatus(request.items);
   if (request.status === "cd" && !hasCdPending && hasPendingApproval) return "aprovacao";
   if (request.status === "cd" && !hasCdPending && hasPurchasePending) return "aprovacao";
   if (request.status === "recebimento" && !hasReceiptPending && hasPurchasePending) return "compra";
@@ -2279,6 +2438,24 @@ function getPurchaseServedQty(item) {
   return getPurchasePendingQty(item) + (Number(item.purchaseReceivedQty) || 0);
 }
 
+function getAlmoxServedQty(item) {
+  if (Number.isFinite(Number(item.almoxQty))) return Number(item.almoxQty) || 0;
+  const quantity = Number(item.quantity) || 0;
+  return Math.max(0, quantity - getCdServedQty(item) - getPurchaseServedQty(item));
+}
+
+function getAlmoxServedQtySum(request) {
+  return request.items.reduce((sum, item) => sum + getAlmoxServedQty(item), 0);
+}
+
+function getCdServedQtySum(request) {
+  return request.items.reduce((sum, item) => sum + getCdServedQty(item), 0);
+}
+
+function getPurchaseServedQtySum(request) {
+  return request.items.reduce((sum, item) => sum + getPurchaseServedQty(item), 0);
+}
+
 function getItemPurchaseStatus(request, item) {
   const need = getPurchaseBaseQty(item);
   if (need <= 0) return "Sem compra";
@@ -2304,6 +2481,11 @@ function getItemStageStatus(request, item) {
   if (getPurchaseBaseQty(item) > 0) return getItemPurchaseStatus(request, item);
   if (request.status === "solicitacao") return "Pendente Almox";
   return statusText[request.status] || "-";
+}
+
+function hasRealSapCode(item) {
+  const code = String(item?.code || "").trim().toUpperCase();
+  return Boolean(code && code !== "CADASTRO PENDENTE");
 }
 
 function getWithdrawnQty(item) {
@@ -2593,30 +2775,68 @@ function renderEmailSettings() {
   if (!emailSettingsForm || !emailSettingsGrid) return;
   emailSettings = normalizeEmailSettings(emailSettings);
   const users = Object.entries(getAllAccounts()).map(([email, user]) => ({ ...user, email }));
+  const roleOrder = ["admin", "manager", "almox", "cd", "compras", "pcm"];
+  const usersByRole = roleOrder
+    .map((role) => ({
+      role,
+      users: users.filter((user) => user.role === role),
+    }))
+    .filter((group) => group.users.length > 0);
   emailSettingsGrid.innerHTML = emailStepKeys
     .map((key) => {
-      const setting = emailSettings[key] || { users: [], extra: "" };
-      const allSelected = users.length > 0 && setting.users.length >= users.length;
+      const setting = emailSettings[key] || { toUsers: [], ccUsers: [], extraTo: "", extraCc: "" };
+      const allSelected = users.length > 0 && setting.toUsers.length >= users.length;
       return `<article class="email-step-card">
         <div class="email-step-head">
           <div>
             <strong>${emailStepLabels[key]}</strong>
-            <span data-email-summary="${key}">${setting.users.length} usuário(s) selecionado(s)</span>
+            <span data-email-summary="${key}">${setting.toUsers.length} Para | ${setting.ccUsers.length} Cópia</span>
           </div>
-          <button class="secondary-action compact email-toggle-all" type="button" data-email-toggle-all="${key}">${allSelected ? "Limpar seleção" : "Selecionar todos"}</button>
+          <button class="secondary-action compact email-toggle-all" type="button" data-email-toggle-all="${key}">${allSelected ? "Não enviar para todos" : "Todos em Para"}</button>
         </div>
-        <div class="email-user-options">
-          ${users.map((user) => `
-            <label class="email-user-chip">
-              <input type="checkbox" data-email-step="${key}" data-user-login="${escapeAttr(user.email)}" ${setting.users.includes(user.email) ? "checked" : ""} />
-              <span>${escapeHtml(user.name || user.email)}</span>
-              <small>${escapeHtml(user.corporateEmail || defaultCorporateEmail(user.email))}</small>
-            </label>
-          `).join("")}
+        <div class="email-role-groups">
+          ${usersByRole.map((group) => {
+            const roleToCount = group.users.filter((user) => setting.toUsers.includes(user.email)).length;
+            const roleCcCount = group.users.filter((user) => setting.ccUsers.includes(user.email)).length;
+            const roleNoneCount = group.users.length - roleToCount - roleCcCount;
+            const activeMode = roleToCount === group.users.length ? "to" : roleCcCount === group.users.length ? "cc" : roleNoneCount === group.users.length ? "none" : "";
+            return `
+            <details class="email-role-group">
+              <summary>
+                <span>
+                  <strong>${roleLabel(group.role)}</strong>
+                  <small data-email-role-summary="${key}-${group.role}">${roleToCount} Para | ${roleCcCount} Cópia</small>
+                </span>
+                <div>
+                  <button class="secondary-action compact email-role-mode ${activeMode === "to" ? "is-active to" : ""}" type="button" data-email-step="${key}" data-email-toggle-role="${group.role}" data-email-mode="to">Para</button>
+                  <button class="secondary-action compact email-role-mode ${activeMode === "cc" ? "is-active cc" : ""}" type="button" data-email-step="${key}" data-email-toggle-role="${group.role}" data-email-mode="cc">Cópia</button>
+                  <button class="secondary-action compact email-role-mode ${activeMode === "none" ? "is-active none" : ""}" type="button" data-email-step="${key}" data-email-toggle-role="${group.role}" data-email-mode="none">Não enviar</button>
+                </div>
+              </summary>
+              <div class="email-user-options">
+                ${group.users.map((user) => `
+                  <div class="email-user-chip">
+                    <span>${escapeHtml(user.name || user.email)}</span>
+                    <small>${escapeHtml(user.corporateEmail || defaultCorporateEmail(user.email))}</small>
+                    <div class="email-recipient-modes" role="radiogroup" aria-label="Destino de ${escapeAttr(user.name || user.email)}">
+                      <label><input type="radio" name="email-${key}-${escapeAttr(user.email)}" value="to" data-email-step="${key}" data-user-role="${escapeAttr(group.role)}" data-user-login="${escapeAttr(user.email)}" ${setting.toUsers.includes(user.email) ? "checked" : ""} /> Para</label>
+                      <label><input type="radio" name="email-${key}-${escapeAttr(user.email)}" value="cc" data-email-step="${key}" data-user-role="${escapeAttr(group.role)}" data-user-login="${escapeAttr(user.email)}" ${setting.ccUsers.includes(user.email) ? "checked" : ""} /> Cópia</label>
+                      <label><input type="radio" name="email-${key}-${escapeAttr(user.email)}" value="none" data-email-step="${key}" data-user-role="${escapeAttr(group.role)}" data-user-login="${escapeAttr(user.email)}" ${!setting.toUsers.includes(user.email) && !setting.ccUsers.includes(user.email) ? "checked" : ""} /> Não enviar</label>
+                    </div>
+                  </div>
+                `).join("")}
+              </div>
+            </details>
+          `;
+          }).join("")}
         </div>
         <label class="email-extra-field">
-          <small>E-mails extras</small>
-          <input type="text" data-email-step="${key}" data-extra-email value="${escapeAttr(setting.extra || "")}" placeholder="email@jtptransportes.com.br; outro@email.com" />
+          <small>E-mails extras em Para</small>
+          <input type="text" data-email-step="${key}" data-extra-to value="${escapeAttr(setting.extraTo || "")}" placeholder="email@jtptransportes.com.br; outro@email.com" />
+        </label>
+        <label class="email-extra-field">
+          <small>E-mails extras em Cópia</small>
+          <input type="text" data-email-step="${key}" data-extra-cc value="${escapeAttr(setting.extraCc || "")}" placeholder="email@jtptransportes.com.br; outro@email.com" />
         </label>
       </article>`;
     })
@@ -2624,12 +2844,34 @@ function renderEmailSettings() {
 }
 
 function updateEmailStepSummary(key) {
-  const checkboxes = Array.from(emailSettingsForm.querySelectorAll(`[data-email-step="${key}"][data-user-login]`));
-  const selected = checkboxes.filter((input) => input.checked).length;
+  const radios = Array.from(emailSettingsForm.querySelectorAll(`[data-email-step="${key}"][data-user-login]`));
+  const toSelected = radios.filter((input) => input.checked && input.value === "to").length;
+  const ccSelected = radios.filter((input) => input.checked && input.value === "cc").length;
   const summary = emailSettingsForm.querySelector(`[data-email-summary="${key}"]`);
   const button = emailSettingsForm.querySelector(`[data-email-toggle-all="${key}"]`);
-  if (summary) summary.textContent = `${selected} usuário(s) selecionado(s)`;
-  if (button) button.textContent = selected === checkboxes.length ? "Limpar seleção" : "Selecionar todos";
+  const userCount = new Set(radios.map((input) => input.dataset.userLogin)).size;
+  if (summary) summary.textContent = `${toSelected} Para | ${ccSelected} Cópia`;
+  if (button) button.textContent = toSelected === userCount ? "Não enviar para todos" : "Todos em Para";
+  const roleNames = new Set(radios.map((input) => input.dataset.userRole).filter(Boolean));
+  roleNames.forEach((role) => {
+    const roleRadios = radios.filter((input) => input.dataset.userRole === role);
+    const roleTo = roleRadios.filter((input) => input.checked && input.value === "to").length;
+    const roleCc = roleRadios.filter((input) => input.checked && input.value === "cc").length;
+    const roleNone = new Set(roleRadios.map((input) => input.dataset.userLogin)).size - roleTo - roleCc;
+    const roleUserCount = new Set(roleRadios.map((input) => input.dataset.userLogin)).size;
+    const roleSummary = emailSettingsForm.querySelector(`[data-email-role-summary="${key}-${role}"]`);
+    if (roleSummary) roleSummary.textContent = `${roleTo} Para | ${roleCc} Cópia`;
+    emailSettingsForm.querySelectorAll(`[data-email-step="${key}"][data-email-toggle-role="${role}"]`).forEach((button) => {
+      const active =
+        (button.dataset.emailMode === "to" && roleTo === roleUserCount) ||
+        (button.dataset.emailMode === "cc" && roleCc === roleUserCount) ||
+        (button.dataset.emailMode === "none" && roleNone === roleUserCount);
+      button.classList.toggle("is-active", active);
+      button.classList.toggle("to", active && button.dataset.emailMode === "to");
+      button.classList.toggle("cc", active && button.dataset.emailMode === "cc");
+      button.classList.toggle("none", active && button.dataset.emailMode === "none");
+    });
+  });
 }
 
 function markUserRowChanged(target) {
@@ -2647,7 +2889,7 @@ function markUserRowChanged(target) {
 }
 
 function isPendingRegistrationItem(item) {
-  return Boolean(item?.isPendingRegistration || item?.pendingRegistrationId);
+  return !hasRealSapCode(item) && Boolean(item?.isPendingRegistration || item?.pendingRegistrationId || String(item?.code || "").trim().toUpperCase() === "CADASTRO PENDENTE");
 }
 
 function canManagePartRegistrations() {
@@ -3036,6 +3278,9 @@ function createHistorySlaMap(request) {
 
 function createHistoryTimeline(request) {
   const displayStatus = getDisplayStatus(request);
+  const almoxQty = getAlmoxServedQtySum(request);
+  const cdQty = getCdServedQtySum(request);
+  const purchaseQty = getPurchaseServedQtySum(request);
   const steps = [
     {
       label: "Solicitação",
@@ -3047,7 +3292,7 @@ function createHistoryTimeline(request) {
     },
     {
       label: "Almoxarifado",
-      status: request.attendedAt ? "Atendido" : displayStatus === "solicitacao" ? "Pendente" : "Não passou",
+      status: request.attendedAt ? almoxQty > 0 ? `Atendeu ${almoxQty} un.` : "Sem saldo local" : displayStatus === "solicitacao" ? "Pendente" : "Não passou",
       owner: request.almoxBy || "-",
       date: request.attendedAt,
       sla: getAreaSla(request, "almox"),
@@ -3055,7 +3300,7 @@ function createHistoryTimeline(request) {
     },
     {
       label: "CD",
-      status: request.cdAt ? "Atendido" : displayStatus === "cd" ? "Pendente" : "Não acionado",
+      status: request.cdAt ? cdQty > 0 ? `Atendeu ${cdQty} un.` : "Sem saldo no CD" : displayStatus === "cd" ? "Pendente" : "Não acionado",
       owner: request.cdBy || "-",
       date: request.cdAt,
       sla: getAreaSla(request, "cd"),
@@ -3073,7 +3318,7 @@ function createHistoryTimeline(request) {
       label: "Compra",
       status: request.purchaseAt
         ? hasPurchaseReceipt(request)
-          ? "Compra recebida"
+          ? `Recebida ${purchaseQty} un.`
           : request.purchaseArrivedAt
           ? "Compra entregue ao Almoxarifado"
           : request.purchaseOrder
@@ -3100,7 +3345,7 @@ function createHistoryTimeline(request) {
     {
       label: "Retirada",
       status: request.withdrawnAt ? "Retirado pelo PCM" : request.pickupAt ? "Retirada parcial registrada" : hasPickupPending(request) ? "Liberado para retirada" : "Aguardando",
-      owner: request.withdrawnAt || request.pickupAt ? request.requestedBy || "-" : "-",
+      owner: request.withdrawnAt || request.pickupAt ? `${request.withdrawnPerson || request.requestedBy || "-"}${request.praxioRequisition ? ` | Praxio ${request.praxioRequisition}` : ""}` : "-",
       date: request.withdrawnAt || request.pickupAt,
       sla: request.withdrawnAt || request.pickupAt ? formatDuration(request.createdAt, request.withdrawnAt || request.pickupAt) : "-",
       state: request.withdrawnAt ? "done" : hasPickupPending(request) ? "active" : request.pickupAt ? "done" : "idle",
@@ -3124,7 +3369,7 @@ function createHistoryItemDetails(request) {
       <strong>${item.code}</strong>
       <span>${item.description}</span>
       <b>${item.quantity || 0}</b>
-      <b>${item.availableQty || 0}</b>
+      <b>${getAlmoxServedQty(item)}</b>
       <b>${getCdServedQty(item)}</b>
       <b>${getPurchaseServedQty(item)}</b>
       <small>${getItemStageStatus(request, item)}</small>
@@ -3164,7 +3409,17 @@ function getItemInvoiceMarkup(request, item, type) {
 
 function getItemReceiptMarkup(request, item) {
   if (!request.receiptNumber) return "-";
-  if ((Number(item.purchaseReceivedQty) || 0) > 0 || (Number(item.cdReceivedQty) || 0) > 0) return request.receiptNumber;
+  const hasPurchaseReceiptItem = (Number(item.purchaseReceivedQty) || 0) > 0;
+  const hasCdReceiptItem = (Number(item.cdReceivedQty) || 0) > 0;
+  if (hasPurchaseReceiptItem) {
+    const invoice = request.receiptInvoiceName
+      ? request.receiptInvoiceDataUrl
+        ? `<a class="invoice-link" href="${escapeAttr(request.receiptInvoiceDataUrl)}" download="${escapeAttr(request.receiptInvoiceName)}" target="_blank" rel="noopener">${escapeHtml(request.receiptInvoiceName)}</a>`
+        : escapeHtml(request.receiptInvoiceName)
+      : "";
+    return invoice ? `${escapeHtml(request.receiptNumber)}<br>${invoice}` : escapeHtml(request.receiptNumber);
+  }
+  if (hasCdReceiptItem) return escapeHtml(request.receiptNumber);
   return "-";
 }
 
@@ -3445,6 +3700,7 @@ function savePurchaseDelivery(id, purchaseOrder, deliveryDate, buyerNote = "") {
     window.alert("Informe o número do pedido de compra.");
     return;
   }
+  let updatedRequest = null;
   requests = requests.map((request) => {
     if (request.id !== id) return request;
     if (!request.sapRequestNumber) {
@@ -3453,7 +3709,7 @@ function savePurchaseDelivery(id, purchaseOrder, deliveryDate, buyerNote = "") {
     }
     const hasCdReceiptPending = request.items.some((item) => Number(item.cdQty) > 0);
     const nextStatus = hasCdReceiptPending ? "recebimento" : "compra";
-    return {
+    updatedRequest = {
       ...request,
       purchaseOrder: request.purchaseOrder || cleanOrder,
       deliveryDate,
@@ -3463,8 +3719,12 @@ function savePurchaseDelivery(id, purchaseOrder, deliveryDate, buyerNote = "") {
         ? `Pedido de compra ${request.purchaseOrder || cleanOrder} registrado pelo time de Compras. Previsão de entrega: ${formatDateOnly(deliveryDate)}. Aguardando chegada.`
         : `Pedido de compra ${request.purchaseOrder || cleanOrder} registrado pelo time de Compras. Pendente de data de chegada.`,
     };
+    return updatedRequest;
   });
   saveRequests();
+  if (updatedRequest) {
+    openPurchaseEmailDraft(updatedRequest, "");
+  }
   render();
 }
 
@@ -3558,26 +3818,31 @@ function userLoginToEmail(login) {
   return value.includes("@") ? value : `${normalizeLogin(value)}@jtptransportes.com.br`;
 }
 
-function getDefaultCc(to) {
-  const primaryList = normalizeEmailList(to).split(";").map((email) => email.trim().toLowerCase()).filter(Boolean);
-  return Object.keys(getAllAccounts())
-    .map(userLoginToEmail)
-    .filter((email, index, list) => email && !primaryList.includes(email.toLowerCase()) && list.indexOf(email) === index)
-    .join(";");
-}
-
 function getEmailRecipients(step, fallback = "") {
   const setting = normalizeEmailStepSetting(emailSettings?.[step], null);
-  const selectedUsers = (setting.users || []).map(userLoginToEmail).filter(Boolean);
-  const extra = splitEmailLikeList(setting.extra || "").map(userLoginToEmail).filter(Boolean);
-  const configured = [...selectedUsers, ...extra].filter((email, index, list) => email && list.indexOf(email) === index).join(";");
-  return configured || normalizeEmailList(fallback);
+  const to = [
+    ...(setting.toUsers || []).map(userLoginToEmail),
+    ...splitEmailLikeList(setting.extraTo || "").map(userLoginToEmail),
+  ].filter(Boolean);
+  const cc = [
+    ...(setting.ccUsers || []).map(userLoginToEmail),
+    ...splitEmailLikeList(setting.extraCc || "").map(userLoginToEmail),
+  ].filter(Boolean);
+  const uniqueTo = to.filter((email, index, list) => list.indexOf(email) === index);
+  const toSet = new Set(uniqueTo.map((email) => email.toLowerCase()));
+  const uniqueCc = cc.filter((email, index, list) => email && !toSet.has(email.toLowerCase()) && list.indexOf(email) === index);
+  return {
+    to: uniqueTo.join(";") || normalizeEmailList(fallback),
+    cc: uniqueCc.join(";"),
+  };
 }
 
-function openMailDraft(to, subject, bodyText) {
-  const recipient = String(to || "").trim();
-  const cc = getDefaultCc(recipient);
+async function openMailDraft(to, subject, bodyText) {
+  const recipients = typeof to === "object" && to !== null ? to : { to };
+  const recipient = String(recipients.to || "").trim();
+  const cc = String(recipients.cc || "").trim();
   const ccParam = cc ? `&cc=${encodeURIComponent(cc)}` : "";
+  await flushSupabaseWrites();
   window.location.href = `mailto:${encodeURIComponent(recipient)}?subject=${encodeURIComponent(subject)}${ccParam}&body=${encodeURIComponent(bodyText)}`;
 }
 
@@ -3681,6 +3946,36 @@ function openPurchaseEmailDraft(request, to) {
   ]);
 
   openMailDraft(getEmailRecipients("purchase", to || `${userLoginToEmail("jessica.lopes")}; ${userLoginToEmail(request.requestedByEmail || request.requestedBy)}`), subject, bodyText);
+}
+
+function openPurchaseArrivalEmailDraft(request, to) {
+  const subject = buildEmailSubject(request, "Chegada de compra");
+  const arrivedItems = request.items.filter((item) => item.purchaseApproval === "approved" && (getPurchasePendingQty(item) > 0 || Number(item.purchaseReceivedQty) > 0));
+  const bodyText = buildEmailBody("Chegada de Item Comprado", `O Almoxarifado informou a chegada de item comprado da solicitação ${request.id}.`, [
+    { title: "Dados da Compra", content: `Solicitação: ${request.id}\nSolicitação SAP: ${request.sapRequestNumber || "-"}\nPedido de compra: ${request.purchaseOrder || "-"}\nData de chegada: ${request.purchaseArrivedDate ? formatDateOnly(request.purchaseArrivedDate) : formatDateOrDash(request.purchaseArrivedAt)}\nInformado por: ${request.purchaseArrivedBy || "Almoxarifado"}\nStatus: Pendente entrada e recebimento no SAP` },
+    { title: "Itens", content: arrivedItems.length ? formatEmailItems(arrivedItems, (item) => getPurchasePendingQty(item) || item.purchaseReceivedQty || item.purchaseQty, () => [
+      `PEDIDO DE COMPRA: ${request.purchaseOrder || "-"}`,
+      "STATUS: Pendente entrada e recebimento no SAP",
+    ]) : "Nenhum item comprado pendente de recebimento." },
+  ]);
+
+  openMailDraft(getEmailRecipients("receipt", to || `${userLoginToEmail(request.requestedByEmail || request.requestedBy)}; ${userLoginToEmail("rodrigo.araujo")}`), subject, bodyText);
+}
+
+function openReceiptEmailDraft(request, to) {
+  const subject = buildEmailSubject(request, "Disponível para retirada");
+  const receiptItems = request.items.filter((item) => Number(item.availableQty) > 0 && (Number(item.cdReceivedQty) > 0 || Number(item.purchaseReceivedQty) > 0));
+  const bodyText = buildEmailBody("Peça Disponível para Retirada", `O Almoxarifado confirmou entrada SAP/recebimento da solicitação ${request.id}. Os itens abaixo estão disponíveis para retirada do PCM.`, [
+    { title: "Dados do Recebimento", content: `Solicitação: ${request.id}\nEntrada SAP: ${request.receiptNumber || "-"}\nData de chegada/recebimento: ${request.purchaseArrivedDate ? formatDateOnly(request.purchaseArrivedDate) : "-"}\nRecebido por: ${request.receiptBy || "Almoxarifado"}\nNF fornecedor: ${request.receiptInvoiceName || "-"}\nNF transferência CD: ${request.transferInvoiceName || "-"}` },
+    { title: "Itens disponíveis", content: receiptItems.length ? formatEmailItems(receiptItems, (item) => Number(item.availableQty) || 0, (item) => [
+      `ATENDIDO ALMOX: ${getAlmoxServedQty(item)} UNIDADES`,
+      `RECEBIDO CD: ${item.cdReceivedQty || 0} UNIDADES`,
+      `RECEBIDO COMPRA: ${item.purchaseReceivedQty || 0} UNIDADES`,
+      "STATUS: Disponível para retirada do PCM",
+    ]) : "Nenhum item disponível para retirada." },
+  ]);
+
+  openMailDraft(getEmailRecipients("pickup", to || userLoginToEmail(request.requestedByEmail || request.requestedBy)), subject, bodyText);
 }
 
 function createProcessMap(request) {

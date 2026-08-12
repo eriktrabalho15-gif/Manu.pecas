@@ -421,6 +421,38 @@ body[data-view="app"] .login-screen {
   font-weight: 800;
 }
 
+.supabase-status {
+  display: inline-flex;
+  min-height: 28px;
+  align-items: center;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  background: var(--panel);
+  color: var(--muted);
+  font-size: 0.72rem;
+  padding: 0 10px;
+  white-space: nowrap;
+}
+
+.supabase-status[data-status="ok"] {
+  border-color: color-mix(in srgb, var(--green) 40%, var(--line));
+  background: var(--green-soft);
+  color: var(--green-dark);
+}
+
+.supabase-status[data-status="saving"] {
+  border-color: color-mix(in srgb, var(--blue) 40%, var(--line));
+  background: var(--blue-soft);
+  color: var(--blue);
+}
+
+.supabase-status[data-status="error"],
+.supabase-status[data-status="offline"] {
+  border-color: color-mix(in srgb, var(--red) 38%, var(--line));
+  background: var(--red-soft);
+  color: var(--red);
+}
+
 .notification-wrap {
   position: relative;
 }
@@ -1197,21 +1229,86 @@ body[data-view="app"] .login-screen {
   gap: 8px;
 }
 
-.email-user-chip {
+.email-role-groups {
   display: grid;
-  grid-template-columns: auto 1fr;
-  gap: 2px 8px;
-  align-items: center;
+  gap: 10px;
+}
+
+.email-role-group {
+  display: grid;
+  gap: 8px;
   border: 1px solid var(--line);
   border-radius: 8px;
   background: var(--panel);
-  color: var(--ink);
-  padding: 9px;
+  padding: 0;
+  overflow: hidden;
 }
 
-.email-user-chip input {
-  width: auto;
-  grid-row: span 2;
+.email-role-group summary {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 10px;
+  cursor: pointer;
+  list-style-position: inside;
+}
+
+.email-role-group summary > span {
+  display: inline-grid;
+  gap: 2px;
+}
+
+.email-role-group summary strong {
+  color: var(--ink);
+  font-size: 0.8rem;
+  text-transform: uppercase;
+}
+
+.email-role-group summary > div {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  justify-content: flex-end;
+}
+
+.email-role-group summary .compact {
+  min-height: 28px;
+  padding: 0 8px;
+  font-size: 0.68rem;
+}
+
+.email-role-mode.is-active {
+  color: #fff;
+}
+
+.email-role-mode.is-active.to {
+  border-color: var(--green);
+  background: var(--green);
+}
+
+.email-role-mode.is-active.cc {
+  border-color: #2563eb;
+  background: #2563eb;
+}
+
+.email-role-mode.is-active.none {
+  border-color: #dc2626;
+  background: #dc2626;
+}
+
+.email-role-group .email-user-options {
+  padding: 0 10px 10px;
+}
+
+.email-user-chip {
+  display: grid;
+  gap: 6px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--panel-strong);
+  color: var(--ink);
+  padding: 9px;
 }
 
 .email-user-chip span {
@@ -1225,6 +1322,36 @@ body[data-view="app"] .login-screen {
   font-size: 0.72rem;
 }
 
+.email-recipient-modes {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 5px;
+}
+
+.email-recipient-modes label {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 4px;
+  min-height: 30px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: var(--panel-strong);
+  color: var(--muted);
+  font-size: 0.7rem;
+  font-weight: 850;
+}
+
+.email-recipient-modes input {
+  width: auto;
+}
+
+.email-recipient-modes label:has(input:checked) {
+  border-color: rgba(0, 150, 105, 0.42);
+  background: var(--success-soft);
+  color: var(--accent);
+}
+
 .email-extra-field {
   display: grid;
   gap: 6px;
@@ -1235,10 +1362,33 @@ body[data-view="app"] .login-screen {
   grid-column: 1 / -1;
 }
 
+.pickup-confirmation-fields {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
+  margin-top: 12px;
+  padding-top: 12px;
+  border-top: 1px solid var(--line);
+}
+
+.pickup-confirmation-fields .pickup-message {
+  grid-column: 1 / -1;
+  color: var(--danger);
+  font-weight: 800;
+}
+
 .form-message {
   margin: 0;
   color: var(--green-dark);
   font-weight: 850;
+}
+
+.form-message.error {
+  color: var(--red);
+}
+
+.form-message.success {
+  color: var(--green-dark);
 }
 
 .user-list {
@@ -2045,19 +2195,16 @@ body[data-role="cd"] .tab-button[data-page="request"],
 body[data-role="admin"] .tab-button[data-page="request"],
 body[data-role="compras"] .tab-button[data-page="request"],
 body[data-role="compras"] .tab-button[data-page="pending"],
-body[data-role="compras"] .history-tab,
 body[data-role="compras"] .approval-tab,
-body[data-role="cd"] .history-tab,
 body[data-role="cd"] .approval-tab,
 body[data-role="cd"] .purchase-tab,
 body[data-role="cd"] .filters,
 body[data-role="cd"] .metrics-grid,
-body[data-role="pcm"] .history-tab,
 body[data-role="pcm"] .approval-tab,
 body[data-role="pcm"] .purchase-tab,
-body[data-role="almox"] .history-tab,
 body[data-role="almox"] .approval-tab,
 body[data-role="almox"] .purchase-tab,
+body[data-role="almox"] .filter-button[data-filter="cd"],
 body:not([data-role="admin"]) .admin-tab,
 body:not([data-role="admin"]) .part-admin-tab,
 body:not([data-role="admin"]) .email-admin-tab,
@@ -2130,6 +2277,20 @@ body[data-role="admin"] .request-card {
   }
 
   .email-user-options {
+    grid-template-columns: 1fr;
+  }
+
+  .email-role-group summary {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .email-role-group summary > div {
+    display: grid;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
+
+  .pickup-confirmation-fields {
     grid-template-columns: 1fr;
   }
 
@@ -2271,6 +2432,11 @@ body[data-role="admin"] .request-card {
     grid-column: 1 / -1;
     min-width: 0;
     overflow-wrap: anywhere;
+  }
+
+  .supabase-status {
+    grid-column: 1 / -1;
+    justify-content: center;
   }
 
   .notification-wrap {
