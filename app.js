@@ -162,12 +162,15 @@ const slaBuy = document.querySelector("#sla-buy");
 
 applyTheme(localStorage.getItem(THEME_KEY) || "light");
 
-loginForm.addEventListener("submit", (event) => {
+loginForm.addEventListener("submit", async (event) => {
   event.preventDefault();
   const rawEmail = loginForm.elements.email.value.trim().toLowerCase();
   const email = normalizeLogin(rawEmail);
   const password = loginForm.elements.password.value;
-  const account = getAllAccounts()[email];
+  let account = getAllAccounts()[email];
+  if ((!account || account.password !== password) && supabaseClient) {
+    account = await loadAccountForLogin(email);
+  }
 
   if (!account || account.password !== password) {
     loginForm.classList.add("has-error");
@@ -474,7 +477,6 @@ async function startApp() {
   currentFilter = currentUser.role === "cd" ? "cd" : "solicitacao";
   resetItemLines();
   await syncFromSupabase();
-  await purgeHistoryOnce();
   mirrorRequestsToStructuredTables(requests);
   mirrorCustomPartsToStructuredTable(customParts);
   setPage(currentPage);
@@ -939,6 +941,24 @@ async function loadSupabaseRows(table, keyField) {
     return null;
   }
   return (data || []).map((row) => row.data).filter(Boolean);
+}
+
+async function loadAccountForLogin(login) {
+  const normalizedLogin = normalizeLogin(login);
+  const { data, error } = await supabaseClient
+    .from("manupecas_users")
+    .select("email, data")
+    .eq("email", normalizedLogin)
+    .maybeSingle();
+  if (error) {
+    console.warn("Erro ao buscar usuário no Supabase:", error.message);
+    return null;
+  }
+  if (!data?.data) return null;
+  const remoteUser = normalizeAccount(data.data, data.email);
+  managedUsers = dedupeUsers([...managedUsers.filter((user) => normalizeLogin(user.email) !== normalizedLogin), remoteUser]);
+  localStorage.setItem(USERS_KEY, JSON.stringify(managedUsers));
+  return remoteUser;
 }
 
 async function loadStructuredItems() {
@@ -1444,7 +1464,11 @@ async function saveEmailSettings() {
 }
 
 function normalizeLogin(login) {
-  const value = String(login || "").trim().toLowerCase().replace(/@jtptransportes\.com\.br$/, "");
+  const value = String(login || "")
+    .trim()
+    .toLowerCase()
+    .replace(/@jtptransportes\.com\.br$/, "")
+    .replace(/\s+/g, ".");
   return emailAliases[value] || value;
 }
 
@@ -1521,6 +1545,7 @@ function getAllAccounts() {
     Object.fromEntries(Object.entries(accounts).map(([email, user]) => [email, normalizeAccount(user, email)]))
   );
   deletedUsers.forEach((email) => {
+    if (accounts[email]) return;
     delete merged[email];
   });
   return merged;
