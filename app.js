@@ -1053,25 +1053,42 @@ async function mirrorRequestsToStructuredTables(rows) {
       criado_em: request.createdAt || new Date().toISOString(),
     }));
 
-    const { data: savedRequests, error: requestError } = await supabaseClient
+    const { error: requestError } = await supabaseClient
       .from("solicitacoes")
-      .upsert(requestPayload, { onConflict: "numero" })
-      .select("id, numero");
+      .upsert(requestPayload, { onConflict: "numero" });
 
     if (requestError) {
+      setSupabaseStatus("error", "Supabase: erro em solicitações");
       console.warn("Erro ao salvar solicitações estruturadas:", requestError.message);
+      return;
+    }
+
+    const requestNumbers = normalizedRows.map((request) => request.id);
+    const { data: savedRequests, error: selectError } = await supabaseClient
+      .from("solicitacoes")
+      .select("id, numero")
+      .in("numero", requestNumbers);
+
+    if (selectError) {
+      setSupabaseStatus("error", "Supabase: erro ao buscar solicitações");
+      console.warn("Erro ao buscar solicitações estruturadas:", selectError.message);
       return;
     }
 
     const idByNumber = new Map((savedRequests || []).map((row) => [row.numero, row.id]));
     const requestIds = Array.from(idByNumber.values()).filter(Boolean);
-    if (requestIds.length === 0) return;
+    if (requestIds.length === 0) {
+      setSupabaseStatus("error", "Supabase: solicitação sem ID");
+      console.warn("Solicitações estruturadas não retornaram ID para gravar itens.");
+      return;
+    }
 
     const { error: deleteError } = await supabaseClient
       .from("solicitacao_itens")
       .delete()
       .in("solicitacao_id", requestIds);
     if (deleteError) {
+      setSupabaseStatus("error", "Supabase: erro ao atualizar itens");
       console.warn("Erro ao atualizar itens estruturados:", deleteError.message);
       return;
     }
@@ -1097,9 +1114,14 @@ async function mirrorRequestsToStructuredTables(rows) {
 
     if (itemPayload.length > 0) {
       const { error: itemError } = await supabaseClient.from("solicitacao_itens").insert(itemPayload);
-      if (itemError) console.warn("Erro ao salvar itens estruturados:", itemError.message);
+      if (itemError) {
+        setSupabaseStatus("error", "Supabase: erro em itens");
+        console.warn("Erro ao salvar itens estruturados:", itemError.message);
+        return;
+      }
     }
   } catch (error) {
+    setSupabaseStatus("error", "Supabase: erro no espelho");
     console.warn("Não foi possível espelhar solicitações estruturadas.", error);
   }
 }

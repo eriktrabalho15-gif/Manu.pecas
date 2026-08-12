@@ -97,6 +97,9 @@ alter table public.solicitacao_itens add column if not exists nf_transferencia t
 alter table public.solicitacao_itens add column if not exists entrada_sap text;
 alter table public.solicitacao_itens add column if not exists criado_em timestamptz default now();
 
+create index if not exists idx_solicitacoes_numero on public.solicitacoes(numero);
+create index if not exists idx_solicitacao_itens_solicitacao_id on public.solicitacao_itens(solicitacao_id);
+
 alter table public.manupecas_requests enable row level security;
 alter table public.manupecas_users enable row level security;
 alter table public.manupecas_deleted_users enable row level security;
