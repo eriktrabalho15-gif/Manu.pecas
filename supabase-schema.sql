@@ -71,6 +71,67 @@ create table if not exists public.solicitacao_itens (
   criado_em timestamptz default now()
 );
 
+create table if not exists public.atendimentos_cd (
+  id uuid primary key default gen_random_uuid(),
+  solicitacao_numero text not null,
+  item_chave text not null,
+  codigo_sap text,
+  descricao text,
+  quantidade_enviada numeric default 0,
+  quantidade_atendida numeric default 0,
+  quantidade_compra numeric default 0,
+  responsavel text,
+  nf_transferencia text,
+  inicio_em timestamptz,
+  finalizado_em timestamptz,
+  sla_minutos numeric,
+  status text,
+  criado_em timestamptz default now()
+);
+
+create table if not exists public.compras (
+  id uuid primary key default gen_random_uuid(),
+  solicitacao_numero text not null,
+  item_chave text not null,
+  codigo_sap text,
+  descricao text,
+  quantidade_compra numeric default 0,
+  solicitacao_sap text,
+  pedido_compra text,
+  previsao_entrega date,
+  data_chegada date,
+  observacao text,
+  responsavel_sap text,
+  responsavel_compras text,
+  inicio_em timestamptz,
+  pedido_registrado_em timestamptz,
+  chegada_em timestamptz,
+  finalizado_em timestamptz,
+  sla_minutos numeric,
+  status text,
+  criado_em timestamptz default now()
+);
+
+create table if not exists public.recebimentos (
+  id uuid primary key default gen_random_uuid(),
+  solicitacao_numero text not null,
+  item_chave text not null,
+  codigo_sap text,
+  descricao text,
+  quantidade_cd numeric default 0,
+  quantidade_compra numeric default 0,
+  quantidade_recebida numeric default 0,
+  entrada_sap text,
+  nf_transferencia_cd text,
+  nf_fornecedor text,
+  responsavel text,
+  inicio_em timestamptz,
+  finalizado_em timestamptz,
+  sla_minutos numeric,
+  status text,
+  criado_em timestamptz default now()
+);
+
 alter table public.itens add column if not exists codigo_original text;
 alter table public.itens add column if not exists ativo boolean default true;
 alter table public.itens add column if not exists criado_em timestamptz default now();
@@ -97,8 +158,63 @@ alter table public.solicitacao_itens add column if not exists nf_transferencia t
 alter table public.solicitacao_itens add column if not exists entrada_sap text;
 alter table public.solicitacao_itens add column if not exists criado_em timestamptz default now();
 
+alter table public.atendimentos_cd add column if not exists solicitacao_numero text;
+alter table public.atendimentos_cd add column if not exists item_chave text;
+alter table public.atendimentos_cd add column if not exists codigo_sap text;
+alter table public.atendimentos_cd add column if not exists descricao text;
+alter table public.atendimentos_cd add column if not exists quantidade_enviada numeric default 0;
+alter table public.atendimentos_cd add column if not exists quantidade_atendida numeric default 0;
+alter table public.atendimentos_cd add column if not exists quantidade_compra numeric default 0;
+alter table public.atendimentos_cd add column if not exists responsavel text;
+alter table public.atendimentos_cd add column if not exists nf_transferencia text;
+alter table public.atendimentos_cd add column if not exists inicio_em timestamptz;
+alter table public.atendimentos_cd add column if not exists finalizado_em timestamptz;
+alter table public.atendimentos_cd add column if not exists sla_minutos numeric;
+alter table public.atendimentos_cd add column if not exists status text;
+alter table public.atendimentos_cd add column if not exists criado_em timestamptz default now();
+
+alter table public.compras add column if not exists solicitacao_numero text;
+alter table public.compras add column if not exists item_chave text;
+alter table public.compras add column if not exists codigo_sap text;
+alter table public.compras add column if not exists descricao text;
+alter table public.compras add column if not exists quantidade_compra numeric default 0;
+alter table public.compras add column if not exists solicitacao_sap text;
+alter table public.compras add column if not exists pedido_compra text;
+alter table public.compras add column if not exists previsao_entrega date;
+alter table public.compras add column if not exists data_chegada date;
+alter table public.compras add column if not exists observacao text;
+alter table public.compras add column if not exists responsavel_sap text;
+alter table public.compras add column if not exists responsavel_compras text;
+alter table public.compras add column if not exists inicio_em timestamptz;
+alter table public.compras add column if not exists pedido_registrado_em timestamptz;
+alter table public.compras add column if not exists chegada_em timestamptz;
+alter table public.compras add column if not exists finalizado_em timestamptz;
+alter table public.compras add column if not exists sla_minutos numeric;
+alter table public.compras add column if not exists status text;
+alter table public.compras add column if not exists criado_em timestamptz default now();
+
+alter table public.recebimentos add column if not exists solicitacao_numero text;
+alter table public.recebimentos add column if not exists item_chave text;
+alter table public.recebimentos add column if not exists codigo_sap text;
+alter table public.recebimentos add column if not exists descricao text;
+alter table public.recebimentos add column if not exists quantidade_cd numeric default 0;
+alter table public.recebimentos add column if not exists quantidade_compra numeric default 0;
+alter table public.recebimentos add column if not exists quantidade_recebida numeric default 0;
+alter table public.recebimentos add column if not exists entrada_sap text;
+alter table public.recebimentos add column if not exists nf_transferencia_cd text;
+alter table public.recebimentos add column if not exists nf_fornecedor text;
+alter table public.recebimentos add column if not exists responsavel text;
+alter table public.recebimentos add column if not exists inicio_em timestamptz;
+alter table public.recebimentos add column if not exists finalizado_em timestamptz;
+alter table public.recebimentos add column if not exists sla_minutos numeric;
+alter table public.recebimentos add column if not exists status text;
+alter table public.recebimentos add column if not exists criado_em timestamptz default now();
+
 create index if not exists idx_solicitacoes_numero on public.solicitacoes(numero);
 create index if not exists idx_solicitacao_itens_solicitacao_id on public.solicitacao_itens(solicitacao_id);
+create index if not exists idx_atendimentos_cd_solicitacao on public.atendimentos_cd(solicitacao_numero);
+create index if not exists idx_compras_solicitacao on public.compras(solicitacao_numero);
+create index if not exists idx_recebimentos_solicitacao on public.recebimentos(solicitacao_numero);
 
 alter table public.manupecas_requests enable row level security;
 alter table public.manupecas_users enable row level security;
@@ -109,6 +225,9 @@ alter table public.manupecas_email_settings enable row level security;
 alter table public.itens enable row level security;
 alter table public.solicitacoes enable row level security;
 alter table public.solicitacao_itens enable row level security;
+alter table public.atendimentos_cd enable row level security;
+alter table public.compras enable row level security;
+alter table public.recebimentos enable row level security;
 
 drop policy if exists "manupecas_requests_public_all" on public.manupecas_requests;
 drop policy if exists "manupecas_users_public_all" on public.manupecas_users;
@@ -119,6 +238,9 @@ drop policy if exists "manupecas_email_settings_public_all" on public.manupecas_
 drop policy if exists "itens_public_all" on public.itens;
 drop policy if exists "solicitacoes_public_all" on public.solicitacoes;
 drop policy if exists "solicitacao_itens_public_all" on public.solicitacao_itens;
+drop policy if exists "atendimentos_cd_public_all" on public.atendimentos_cd;
+drop policy if exists "compras_public_all" on public.compras;
+drop policy if exists "recebimentos_public_all" on public.recebimentos;
 
 create policy "manupecas_requests_public_all"
 on public.manupecas_requests
@@ -178,6 +300,27 @@ with check (true);
 
 create policy "solicitacao_itens_public_all"
 on public.solicitacao_itens
+for all
+to anon
+using (true)
+with check (true);
+
+create policy "atendimentos_cd_public_all"
+on public.atendimentos_cd
+for all
+to anon
+using (true)
+with check (true);
+
+create policy "compras_public_all"
+on public.compras
+for all
+to anon
+using (true)
+with check (true);
+
+create policy "recebimentos_public_all"
+on public.recebimentos
 for all
 to anon
 using (true)

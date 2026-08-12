@@ -701,6 +701,8 @@ function normalizeRequest(request) {
       sapRequestBy: request.sapRequestBy || "",
       buyerNote: request.buyerNote || "",
       deliveryDate: request.deliveryDate || "",
+      purchaseUpdatedAt: request.purchaseUpdatedAt || "",
+      purchaseUpdatedBy: request.purchaseUpdatedBy || "",
       purchaseArrivedDate: request.purchaseArrivedDate || "",
       purchaseArrivedAt: request.purchaseArrivedAt || "",
       receiptNumber: request.receiptNumber || "",
@@ -739,6 +741,8 @@ function normalizeRequest(request) {
     sapRequestBy: request.sapRequestBy || "",
     buyerNote: request.buyerNote || "",
     deliveryDate: request.deliveryDate || "",
+    purchaseUpdatedAt: request.purchaseUpdatedAt || "",
+    purchaseUpdatedBy: request.purchaseUpdatedBy || "",
     purchaseArrivedDate: request.purchaseArrivedDate || "",
     purchaseArrivedAt: request.purchaseArrivedAt || "",
     receiptNumber: request.receiptNumber || "",
@@ -1035,6 +1039,144 @@ function upsertSupabaseRows(table, keyField, rows) {
   return trackSupabaseWrite(supabaseClient.from(table).upsert(payload, { onConflict: keyField }), table);
 }
 
+function toNullableIso(value) {
+  if (!value) return null;
+  const date = new Date(value);
+  return Number.isNaN(date.getTime()) ? null : date.toISOString();
+}
+
+function toNullableDate(value) {
+  return value || null;
+}
+
+function getElapsedMinutes(start, end) {
+  const startDate = start ? new Date(start) : null;
+  const endDate = end ? new Date(end) : null;
+  if (!startDate || !endDate || Number.isNaN(startDate.getTime()) || Number.isNaN(endDate.getTime())) return null;
+  return Math.max(0, Math.round((endDate - startDate) / 60000));
+}
+
+function getStructuredItemKey(item, index) {
+  const code = String(item.code || "").trim();
+  if (code) return `${index + 1}-${code}`;
+  return `${index + 1}-${String(item.description || "item").trim().toLowerCase().slice(0, 80)}`;
+}
+
+function getReceiptNumberPlain(request, item) {
+  if (!request.receiptNumber) return "";
+  if ((Number(item.purchaseReceivedQty) || 0) > 0 || (Number(item.cdReceivedQty) || 0) > 0) return request.receiptNumber;
+  return "";
+}
+
+async function replaceOperationalRows(table, requestNumbers, rows) {
+  if (!supabaseClient || requestNumbers.length === 0) return true;
+  const { error: deleteError } = await supabaseClient
+    .from(table)
+    .delete()
+    .in("solicitacao_numero", requestNumbers);
+  if (deleteError) {
+    setSupabaseStatus("error", `Supabase: erro em ${table}`);
+    console.warn(`Erro ao limpar ${table}:`, deleteError.message);
+    return false;
+  }
+  if (rows.length === 0) return true;
+  const { error: insertError } = await supabaseClient.from(table).insert(rows);
+  if (insertError) {
+    setSupabaseStatus("error", `Supabase: erro em ${table}`);
+    console.warn(`Erro ao salvar ${table}:`, insertError.message);
+    return false;
+  }
+  return true;
+}
+
+async function mirrorOperationalTables(normalizedRows) {
+  const requestNumbers = normalizedRows.map((request) => request.id);
+  const cdRows = [];
+  const purchaseRows = [];
+  const receiptRows = [];
+
+  normalizedRows.forEach((request) => {
+    request.items.forEach((item, index) => {
+      const itemKey = getStructuredItemKey(item, index);
+      const requestedQty = Number(item.quantity) || 0;
+      const cdSentQty = Math.max(Number(item.cdPendingQty) || 0, Number(item.cdQty) || 0, Number(item.cdReceivedQty) || 0);
+      const cdServedQty = getCdServedQty(item);
+      const purchaseQty = Math.max(getPurchasePendingQty(item), Number(item.purchaseQty) || 0, Number(item.purchaseReceivedQty) || 0);
+      const cdStartedAt = request.attendedAt || request.createdAt || "";
+      const purchaseStartedAt = request.purchaseAt || request.purchaseApprovedAt || "";
+      const receiptStartedAt = (Number(item.cdQty) || Number(item.cdReceivedQty)) ? request.cdAt : request.purchaseArrivedAt;
+
+      if (cdSentQty > 0 || cdServedQty > 0) {
+        cdRows.push({
+          solicitacao_numero: request.id,
+          item_chave: itemKey,
+          codigo_sap: item.code || "",
+          descricao: item.description || "",
+          quantidade_enviada: cdSentQty,
+          quantidade_atendida: cdServedQty,
+          quantidade_compra: Math.max(0, cdSentQty - cdServedQty),
+          responsavel: request.cdBy || "",
+          nf_transferencia: cdServedQty > 0 ? request.transferInvoiceName || "" : "",
+          inicio_em: toNullableIso(cdStartedAt),
+          finalizado_em: toNullableIso(request.cdAt),
+          sla_minutos: getElapsedMinutes(cdStartedAt, request.cdAt),
+          status: request.cdAt ? "Atendido" : "Pendente atendimento do CD",
+          criado_em: toNullableIso(request.createdAt) || new Date().toISOString(),
+        });
+      }
+
+      if (purchaseQty > 0 || item.purchaseApproval === "approved" || item.purchaseApproval === "rejected") {
+        purchaseRows.push({
+          solicitacao_numero: request.id,
+          item_chave: itemKey,
+          codigo_sap: item.code || "",
+          descricao: item.description || "",
+          quantidade_compra: purchaseQty,
+          solicitacao_sap: request.sapRequestNumber || "",
+          pedido_compra: request.purchaseOrder || "",
+          previsao_entrega: toNullableDate(request.deliveryDate),
+          data_chegada: toNullableDate(request.purchaseArrivedDate),
+          observacao: request.buyerNote || "",
+          responsavel_sap: request.sapRequestBy || "",
+          responsavel_compras: request.purchaseUpdatedBy || "",
+          inicio_em: toNullableIso(purchaseStartedAt || request.sapRequestAt),
+          pedido_registrado_em: toNullableIso(request.purchaseUpdatedAt || request.purchaseAt),
+          chegada_em: toNullableIso(request.purchaseArrivedAt),
+          finalizado_em: toNullableIso(request.purchaseArrivedAt || request.purchaseUpdatedAt),
+          sla_minutos: getElapsedMinutes(purchaseStartedAt || request.sapRequestAt, request.purchaseArrivedAt || request.purchaseUpdatedAt),
+          status: getItemPurchaseStatus(request, item),
+          criado_em: toNullableIso(request.createdAt) || new Date().toISOString(),
+        });
+      }
+
+      if (isReceiptItemPending(request, item) || (Number(item.cdReceivedQty) || 0) > 0 || (Number(item.purchaseReceivedQty) || 0) > 0) {
+        receiptRows.push({
+          solicitacao_numero: request.id,
+          item_chave: itemKey,
+          codigo_sap: item.code || "",
+          descricao: item.description || "",
+          quantidade_cd: Math.max(Number(item.cdQty) || 0, Number(item.cdReceivedQty) || 0),
+          quantidade_compra: Math.max(getPurchasePendingQty(item), Number(item.purchaseReceivedQty) || 0),
+          quantidade_recebida: (Number(item.cdReceivedQty) || 0) + (Number(item.purchaseReceivedQty) || 0),
+          entrada_sap: getReceiptNumberPlain(request, item),
+          nf_transferencia_cd: request.transferInvoiceName || "",
+          nf_fornecedor: request.receiptInvoiceName || "",
+          responsavel: request.receiptBy || "",
+          inicio_em: toNullableIso(receiptStartedAt),
+          finalizado_em: toNullableIso(request.receiptAt),
+          sla_minutos: getElapsedMinutes(receiptStartedAt, request.receiptAt),
+          status: request.receiptAt ? "Recebido pelo Almoxarifado" : "Pendente entrada e recebimento",
+          criado_em: toNullableIso(request.createdAt) || new Date().toISOString(),
+        });
+      }
+    });
+  });
+
+  await replaceOperationalRows("atendimentos_cd", requestNumbers, cdRows);
+  await replaceOperationalRows("compras", requestNumbers, purchaseRows);
+  await replaceOperationalRows("recebimentos", requestNumbers, receiptRows);
+}
+
 async function mirrorRequestsToStructuredTables(rows) {
   if (!supabaseClient) return;
   const normalizedRows = rows.map(normalizeRequest);
@@ -1120,6 +1262,8 @@ async function mirrorRequestsToStructuredTables(rows) {
         return;
       }
     }
+
+    await mirrorOperationalTables(normalizedRows);
   } catch (error) {
     setSupabaseStatus("error", "Supabase: erro no espelho");
     console.warn("Não foi possível espelhar solicitações estruturadas.", error);
@@ -2113,6 +2257,8 @@ function savePurchaseOrder(id, card, shouldEmail) {
     purchaseOrder,
     buyerNote,
     deliveryDate,
+    purchaseUpdatedAt: new Date().toISOString(),
+    purchaseUpdatedBy: currentUser.name || currentUser.label,
     response: deliveryDate
       ? `Pedido de compra registrado. Pedido: ${purchaseOrder}. Previsão de entrega: ${formatDateOnly(deliveryDate)}. Aguardando chegada.`
       : `Itens pendentes enviados para compra no SAP. Pedido: ${purchaseOrder}. Pendente previsão de entrega.`,
@@ -3736,6 +3882,8 @@ function savePurchaseDelivery(id, purchaseOrder, deliveryDate, buyerNote = "") {
       purchaseOrder: request.purchaseOrder || cleanOrder,
       deliveryDate,
       buyerNote: String(buyerNote || "").trim(),
+      purchaseUpdatedAt: new Date().toISOString(),
+      purchaseUpdatedBy: currentUser.name || currentUser.label,
       status: nextStatus,
       response: deliveryDate
         ? `Pedido de compra ${request.purchaseOrder || cleanOrder} registrado pelo time de Compras. Previsão de entrega: ${formatDateOnly(deliveryDate)}. Aguardando chegada.`
