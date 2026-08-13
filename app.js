@@ -8,6 +8,8 @@ const CUSTOM_PARTS_KEY = "pecas-transporte-pecas-cadastradas";
 const PART_REGISTRATIONS_KEY = "pecas-transporte-cadastros-pecas";
 const EMAIL_SETTINGS_KEY = "pecas-transporte-email-config";
 const HISTORY_PURGE_KEY = "manupecas-limpeza-historico-20260812-oficial-03";
+const TARGETED_DELETE_KEY = "manupecas-remover-bp-0002-20260812";
+const TARGETED_DELETE_REQUEST_IDS = ["BP - 0002"];
 const supabaseClient = window.manuPecasSupabase || null;
 
 const partsCatalog = Array.isArray(globalThis.PARTS_CATALOG) ? globalThis.PARTS_CATALOG : [];
@@ -477,6 +479,7 @@ async function startApp() {
   currentFilter = currentUser.role === "cd" ? "cd" : "solicitacao";
   resetItemLines();
   await syncFromSupabase();
+  await deleteTargetedTestRequestsOnce();
   mirrorRequestsToStructuredTables(requests);
   mirrorCustomPartsToStructuredTable(customParts);
   setPage(currentPage);
@@ -932,6 +935,38 @@ async function purgeHistoryOnce() {
   }
 
   localStorage.setItem(HISTORY_PURGE_KEY, "done");
+}
+
+async function deleteTargetedTestRequestsOnce() {
+  if (!["admin", "manager"].includes(currentUser?.role)) return;
+  if (localStorage.getItem(TARGETED_DELETE_KEY) === "done") return;
+
+  const ids = TARGETED_DELETE_REQUEST_IDS;
+  const beforeCount = requests.length;
+  requests = requests.filter((request) => !ids.includes(request.id));
+  if (requests.length !== beforeCount) {
+    localStorage.setItem(REQUESTS_KEY, JSON.stringify(requests));
+  }
+
+  if (supabaseClient) {
+    try {
+      const results = await Promise.allSettled([
+        supabaseClient.from("manupecas_requests").delete().in("id", ids),
+        supabaseClient.from("atendimentos_cd").delete().in("solicitacao_numero", ids),
+        supabaseClient.from("compras").delete().in("solicitacao_numero", ids),
+        supabaseClient.from("recebimentos").delete().in("solicitacao_numero", ids),
+        supabaseClient.from("solicitacoes").delete().in("numero", ids),
+      ]);
+      results.forEach((result) => {
+        const error = result.value?.error || result.reason;
+        if (error) console.warn("Erro ao remover solicitação de teste:", error.message || error);
+      });
+    } catch (error) {
+      console.warn("Não foi possível remover a solicitação de teste.", error);
+    }
+  }
+
+  localStorage.setItem(TARGETED_DELETE_KEY, "done");
 }
 
 async function loadSupabaseRows(table, keyField) {
@@ -3803,6 +3838,10 @@ function approvePurchase(id, mode = "all", selectedCodes = []) {
 
 function renderPurchaseOverview() {
   const purchaseRequests = requests
+    .filter((request) => {
+      if (currentUser.role !== "pcm") return true;
+      return request.requestedByEmail === currentUser.email || request.requestedBy === currentUser.name;
+    })
     .filter((request) => !isPurchaseArrivalRegistered(request) && (request.status === "compra" || hasApprovedPurchasePending(request)))
     .map((request) => ({
       request,
