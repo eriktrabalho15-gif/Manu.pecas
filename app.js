@@ -255,8 +255,10 @@ form.addEventListener("submit", async (event) => {
     return;
   }
 
+  await syncFromSupabase();
+
   const request = {
-    id: makeCode(),
+    id: await makeCode(),
     bus,
     targetType,
     maintainer: data.get("maintainer").trim(),
@@ -299,9 +301,9 @@ partRegistrationClose.addEventListener("click", () => {
   partRegistrationDialog.close();
 });
 
-partRegistrationForm.addEventListener("submit", (event) => {
+partRegistrationForm.addEventListener("submit", async (event) => {
   event.preventDefault();
-  createPartRegistration(new FormData(partRegistrationForm));
+  await createPartRegistration(new FormData(partRegistrationForm));
 });
 
 tabButtons.forEach((button) => {
@@ -569,10 +571,11 @@ function getUserNotifications() {
       if (getDisplayStatus(request) === "recebimento") push(request, "recebimento", "Pendente entrada e recebimento", "recebimento");
       if (hasPickupPending(request)) push(request, "retirada", "Retirada do PCM pendente", "atendimento");
     }
-    if (currentUser.role === "cd" && request.status === "cd") {
-      push(request, "cd", "Pendente de atendimento do CD", "cd");
+    if (currentUser.role === "cd") {
+      if (request.status === "cd") push(request, "cd", "Pendente de atendimento do CD", "cd");
+      if (getDisplayStatus(request) === "recebimento") push(request, "recebimento", "Pendente entrada e recebimento", "recebimento");
     }
-    if (currentUser.role === "compras" && !isPurchaseArrivalRegistered(request) && (request.status === "compra" || hasApprovedPurchasePending(request)) && getPurchasePendingQtySum(request) > 0) {
+    if (currentUser.role === "compras" && isPurchaseQueuePending(request) && getPurchasePendingQtySum(request) > 0) {
       push(request, "compra", "Pendente de pedido de compra", "compra", "purchase");
     }
     if ((currentUser.role === "manager" || currentUser.role === "admin") && hasPurchaseApprovalPending(request)) {
@@ -603,7 +606,7 @@ function getUserNotifications() {
 function getNotificationItemCount(request, filter) {
   if (filter === "atendimento") return request.items.filter(isPickupItemPending).length;
   if (filter === "recebimento") return getReceiptPendingItems(request).length;
-  if (filter === "compra" && currentUser?.role === "compras") return request.items.filter((item) => getPurchasePendingQty(item) > 0 && item.purchaseApproval === "approved").length;
+  if (filter === "compra" && currentUser?.role === "compras") return request.items.filter((item) => isPurchaseItemActive(request, item)).length;
   if (filter === "compra") return request.items.filter((item) => getPurchaseBaseQty(item) > 0 && item.purchaseApproval !== "approved" && item.purchaseApproval !== "rejected").length;
   if (filter === "cd") return request.items.filter((item) => getCdPendingQty(item) > 0).length;
   return request.items.length;
@@ -787,6 +790,8 @@ function normalizeItem(item, requestStatus = "solicitacao") {
     isPendingRegistration: !hasSapCode && Boolean(item.isPendingRegistration),
     pendingRegistrationId: !hasSapCode ? item.pendingRegistrationId || "" : "",
     pendingOriginalCode: !hasSapCode ? item.pendingOriginalCode || "" : "",
+    pendingPhotoName: !hasSapCode ? item.pendingPhotoName || "" : "",
+    pendingPhotoDataUrl: !hasSapCode ? item.pendingPhotoDataUrl || "" : "",
   };
   if (Number.isFinite(Number(item.availableQty)) && Number.isFinite(Number(item.purchaseQty))) {
     return { ...item, ...pendingData, quantity, availableQty: Number(item.availableQty), cdQty: Number(item.cdQty) || 0, purchaseQty: Number(item.purchaseQty), withdrawnQty: Number(item.withdrawnQty) || 0, purchaseApproval: item.purchaseApproval || "" };
@@ -1048,7 +1053,23 @@ async function upsertMergedRequestRows(rows) {
   }
 
   const remoteById = new Map((data || []).map((row) => [row.id, normalizeRequest(row.data)]));
-  const mergedRows = rows.map((row) => mergeRequestByProgress(row, remoteById.get(row.id)));
+  const usedIds = new Set([
+    ...requests.map((request) => request.id).filter(Boolean),
+    ...(data || []).map((row) => row.id).filter(Boolean),
+  ]);
+  const rowsWithoutCollision = rows.map((row) => {
+    const remoteRequest = remoteById.get(row.id);
+    if (remoteRequest && !isSameLogicalRequest(row, remoteRequest)) {
+      const originalId = row.id;
+      row.id = makeNextRequestCode(usedIds);
+      usedIds.add(row.id);
+      row.response = row.response || `Solicitação renumerada de ${originalId} para ${row.id} para evitar duplicidade.`;
+    } else if (row.id) {
+      usedIds.add(row.id);
+    }
+    return row;
+  });
+  const mergedRows = rowsWithoutCollision.map((row) => mergeRequestByProgress(row, remoteById.get(row.id)));
   const mergedById = new Map(mergedRows.map((row) => [row.id, row]));
   requests = requests.map((request) => mergedById.get(request.id) || request);
   localStorage.setItem(REQUESTS_KEY, JSON.stringify(requests));
@@ -1058,11 +1079,32 @@ async function upsertMergedRequestRows(rows) {
 
 function mergeRequestByProgress(localRequest, remoteRequest) {
   if (!remoteRequest) return localRequest;
+  if (!isSameLogicalRequest(localRequest, remoteRequest)) return localRequest;
   const localScore = getRequestProgressScore(localRequest);
   const remoteScore = getRequestProgressScore(remoteRequest);
   if (remoteScore > localScore) return remoteRequest;
   if (localScore > remoteScore) return localRequest;
   return getRequestLastChange(remoteRequest) > getRequestLastChange(localRequest) ? remoteRequest : localRequest;
+}
+
+function isSameLogicalRequest(localRequest, remoteRequest) {
+  if (!localRequest || !remoteRequest) return false;
+  if (localRequest.createdAt && remoteRequest.createdAt && localRequest.createdAt === remoteRequest.createdAt) return true;
+  const localRequester = normalizeLogin(localRequest.requestedByEmail || localRequest.requestedBy || "");
+  const remoteRequester = normalizeLogin(remoteRequest.requestedByEmail || remoteRequest.requestedBy || "");
+  return Boolean(localRequester)
+    && localRequester === remoteRequester
+    && getRequestItemSignature(localRequest) === getRequestItemSignature(remoteRequest);
+}
+
+function getRequestItemSignature(request) {
+  return (request.items || [])
+    .map((item) => [
+      normalizeCode(item.code || ""),
+      String(item.description || "").trim().toLowerCase(),
+      Number(item.quantity) || 0,
+    ].join("|"))
+    .join("||");
 }
 
 function getRequestProgressScore(request) {
@@ -1736,6 +1778,8 @@ function resolvePart(input) {
       isPendingRegistration: true,
       pendingRegistrationId: input.dataset.registrationId,
       pendingOriginalCode: input.dataset.originalCode || "",
+      pendingPhotoName: input.dataset.photoName || "",
+      pendingPhotoDataUrl: input.dataset.photoDataUrl || "",
     };
   }
   const value = input.value.trim();
@@ -1750,20 +1794,42 @@ function resolvePart(input) {
   return null;
 }
 
-function makeCode() {
-  const nextNumber = requests.reduce((max, request) => {
-    const match = String(request.id || "").match(/^BP\s*-\s*(\d+)$/i);
+async function makeCode() {
+  const usedIds = new Set(requests.map((request) => request.id).filter(Boolean));
+  if (supabaseClient) {
+    try {
+      const { data, error } = await supabaseClient.from("manupecas_requests").select("id");
+      if (!error) {
+        (data || []).forEach((row) => {
+          if (row.id) usedIds.add(row.id);
+        });
+      }
+    } catch (error) {
+      console.warn("Não foi possível consultar a numeração no Supabase.", error);
+    }
+  }
+  return makeNextRequestCode(usedIds);
+}
+
+function makeNextRequestCode(usedIds) {
+  let nextNumber = Array.from(usedIds).reduce((max, id) => {
+    const match = String(id || "").match(/^BP\s*-\s*(\d+)$/i);
     return match ? Math.max(max, Number(match[1]) || 0) : max;
   }, 0) + 1;
-  return `BP - ${String(nextNumber).padStart(4, "0")}`;
+  let code = formatRequestCode(nextNumber);
+  while (usedIds.has(code)) {
+    nextNumber += 1;
+    code = formatRequestCode(nextNumber);
+  }
+  return code;
+}
+
+function formatRequestCode(number) {
+  return `BP - ${String(number).padStart(4, "0")}`;
 }
 
 function render() {
   if (!currentUser) return;
-
-  if (currentUser.role === "almox" && currentFilter === "cd") {
-    currentFilter = "solicitacao";
-  }
 
   updateCopy();
   updateMetrics();
@@ -1801,7 +1867,11 @@ function render() {
       if (currentFilter === "solicitacao") return request.status === "solicitacao" || request.status === "cadastro";
       return request.status === currentFilter;
     }
-    if (currentUser.role === "cd") return request.status === "cd";
+    if (currentUser.role === "cd") {
+      if (currentFilter === "recebimento") return getDisplayStatus(request) === "recebimento";
+      if (currentFilter === "cd") return request.status === "cd";
+      return false;
+    }
     if (currentUser.role === "almox" && currentFilter === "recebimento") {
       return getDisplayStatus(request) === "recebimento";
     }
@@ -1809,10 +1879,11 @@ function render() {
       return request.status === "atendimento" || hasPickupPending(request);
     }
     if (currentUser.role === "almox" && currentFilter === "compra") {
-      return (request.status === "compra" || hasApprovedPurchasePending(request)) && !isPurchaseArrivalRegistered(request);
+      return isPurchaseQueuePending(request);
     }
-    if (currentUser.role === "almox" && currentFilter === "cd") return false;
+    if (currentUser.role === "almox" && currentFilter === "cd") return request.status === "cd";
     if (currentFilter === "solicitacao") return request.status === "solicitacao" || request.status === "cadastro";
+    if (currentFilter === "compra") return isPurchaseQueuePending(request);
     return request.status === currentFilter;
   });
 
@@ -1862,11 +1933,12 @@ function createCard(request) {
   const receiptPasswordInput = card.querySelector(".receipt-password");
   const receiptMessage = card.querySelector(".receipt-message");
 
-  const displayStatus = pickupOnlyView ? "atendimento" : currentFilter === "compra" && request.status === "compra" ? "compra" : getDisplayStatus(request);
+  const displayStatus = pickupOnlyView ? "atendimento" : currentFilter === "compra" && isPurchaseQueuePending(request) ? "compra" : getDisplayStatus(request);
   const isReceiptFlow = currentFilter === "recebimento" && displayStatus === "recebimento";
-  const isAlmoxPurchaseQueue = request.status === "compra" && currentUser.role === "almox" && currentFilter === "compra";
-  const isBuyerPurchaseQueue = request.status === "compra" && currentUser.role === "compras";
-  const isAlmoxReceiptQueue = isReceiptFlow && currentUser.role === "almox" && currentFilter === "recebimento";
+  const isAlmoxPurchaseQueue = isPurchaseQueuePending(request) && currentUser.role === "almox" && currentFilter === "compra";
+  const isBuyerPurchaseQueue = isPurchaseQueuePending(request) && currentUser.role === "compras";
+  const canCurrentUserReceive = (currentUser.role === "almox" || currentUser.role === "cd") && currentFilter === "recebimento";
+  const isReceiptQueue = isReceiptFlow && canCurrentUserReceive;
   status.textContent = getRequestStatusText(request, displayStatus);
   status.className = `status-pill status-${displayStatus}`;
   card.querySelector(".request-summary").addEventListener("click", () => card.classList.toggle("expanded"));
@@ -1904,11 +1976,11 @@ function createCard(request) {
   receiptMessage.textContent = request.receiptNumber ? `Recebimento registrado: ${request.receiptNumber}` : "";
   card.querySelector(".transfer-invoice-field").hidden = true;
   card.querySelector(".receipt-number-field").hidden = !isReceiptFlow;
-  card.querySelector(".receipt-invoice-field").hidden = !isAlmoxReceiptQueue;
+  card.querySelector(".receipt-invoice-field").hidden = !isReceiptQueue;
   card.querySelector(".receipt-password-field").hidden = !isReceiptFlow;
   deliveryDateInput.closest(".field").hidden = true;
-  arrivalField.hidden = !isAlmoxReceiptQueue;
-  arrivalDateInput.disabled = !isAlmoxReceiptQueue;
+  arrivalField.hidden = !isReceiptQueue;
+  arrivalDateInput.disabled = !isReceiptQueue;
   purchaseWorkflow.classList.remove("active");
   card.querySelector(".process-map").innerHTML = createProcessMap(pickupOnlyView ? { ...request, status: "atendimento" } : request);
 
@@ -1955,7 +2027,7 @@ function createCard(request) {
     purchaseWorkflow.classList.remove("active");
   }
 
-  if (request.status === "compra" || request.status === "recebimento") {
+  if (isPurchaseQueuePending(request) || request.status === "recebimento") {
     fulfillmentPanel.hidden = true;
     if (currentFilter === "compra" || currentFilter === "recebimento") {
       purchaseWorkflow.classList.add("active");
@@ -2018,10 +2090,9 @@ function createCard(request) {
 
   const purchaseLines = isReceiptFlow
     ? getReceiptPendingItems(request)
-    : request.items.filter((item) => item.purchaseApproval === "approved" && getPurchasePendingQty(item) > 0);
-  fulfillmentPanel.hidden = (request.status === "cadastro" || request.status === "compra" || request.status === "aprovacao" || isReceiptFlow) && !pickupMode ? true : false;
-  purchaseWorkflow.classList.toggle("active", (((request.status === "compra" && currentUser.role === "compras") || (request.status === "compra" && currentUser.role === "almox" && currentFilter === "compra") || (isReceiptFlow && currentUser.role === "almox" && currentFilter === "recebimento")) && !pickupMode));
-  if (currentUser.role === "cd") purchaseWorkflow.classList.remove("active");
+    : request.items.filter((item) => isPurchaseItemActive(request, item));
+  fulfillmentPanel.hidden = (request.status === "cadastro" || isPurchaseQueuePending(request) || request.status === "aprovacao" || isReceiptFlow) && !pickupMode ? true : false;
+  purchaseWorkflow.classList.toggle("active", (((isPurchaseQueuePending(request) && currentUser.role === "compras") || (isPurchaseQueuePending(request) && currentUser.role === "almox" && currentFilter === "compra") || isReceiptQueue) && !pickupMode));
   purchaseItems.innerHTML = purchaseLines.length
     ? purchaseLines.map((item) => {
       const cdReceiptQty = Number(item.cdQty) || 0;
@@ -2055,8 +2126,8 @@ function createCard(request) {
   purchaseSaveButton.hidden = !isBuyerPurchaseQueue;
   purchaseEmailButton.hidden = !isBuyerPurchaseQueue;
   sapRequestSaveButton.hidden = !isAlmoxPurchaseQueue || Boolean(request.sapRequestNumber);
-  purchaseArrivalSaveButton.hidden = !isAlmoxPurchaseQueue || !request.purchaseOrder || !hasApprovedPurchasePending(request);
-  purchaseArrivalButton.hidden = !isAlmoxReceiptQueue;
+  purchaseArrivalSaveButton.hidden = !isAlmoxPurchaseQueue || !request.purchaseOrder;
+  purchaseArrivalButton.hidden = !isReceiptQueue;
   sapRequestInput.closest(".field").hidden = isReceiptFlow && !request.sapRequestNumber;
   purchaseOrderInput.closest(".field").hidden = currentUser.role !== "compras" && !request.purchaseOrder;
   deliveryDateInput.closest(".field").hidden = !isBuyerPurchaseQueue;
@@ -2608,7 +2679,7 @@ function getDisplayItemsForCurrentView(request) {
     return pickupItems.length ? pickupItems : request.items;
   }
   if (currentFilter === "compra") {
-    const purchaseItems = request.items.filter((item) => getPurchasePendingQty(item) > 0);
+    const purchaseItems = request.items.filter((item) => isPurchaseItemActive(request, item));
     return purchaseItems.length ? purchaseItems : request.items;
   }
   return request.items;
@@ -2620,6 +2691,15 @@ function hasPurchaseApprovalPending(request) {
 
 function hasApprovedPurchasePending(request) {
   return Boolean(request?.items?.some((item) => getPurchasePendingQty(item) > 0 && item.purchaseApproval === "approved"));
+}
+
+function isPurchaseItemActive(request, item) {
+  if (!request || !item || getPurchasePendingQty(item) <= 0) return false;
+  return item.purchaseApproval === "approved" || request.status === "compra";
+}
+
+function isPurchaseQueuePending(request) {
+  return Boolean(request && !isPurchaseArrivalRegistered(request) && request.items?.some((item) => isPurchaseItemActive(request, item)));
 }
 
 function getTodayDateInputValue() {
@@ -2779,7 +2859,7 @@ function getQtyStepClass(request, item, step) {
   if (step === "cd" && request.status === "cd") return getCdPendingQty(item) > 0 ? "active" : valueByStep.cd > 0 ? "done" : "idle";
   if (step === "cd" && request.cdAt) return "done";
   if (step === "purchase" && request.status === "aprovacao") return getPurchaseBaseQty(item) > 0 ? "active" : "idle";
-  if (step === "purchase" && request.status === "compra") return valueByStep.purchase > 0 ? "active" : "idle";
+  if (step === "purchase" && isPurchaseQueuePending(request)) return valueByStep.purchase > 0 ? "active" : "idle";
   if (step === "purchase" && request.status === "recebimento") return valueByStep.purchase > 0 || valueByStep.cd > 0 ? "active" : "idle";
   if (step === "purchase") return "idle";
   if (valueByStep[step] > 0) return "done";
@@ -3159,15 +3239,25 @@ function openPartRegistrationDialog(description = "") {
   partRegistrationDialog.showModal();
 }
 
-function createPartRegistration(data) {
+async function createPartRegistration(data) {
   const description = String(data.get("description") || "").trim();
   const originalCode = String(data.get("originalCode") || "").trim();
+  const photoFile = data.get("partPhoto");
+  const hasPhoto = photoFile && photoFile.name && photoFile.size > 0;
 
   if (!description || !originalCode) {
     partRegistrationMessage.textContent = "Informe a descrição e o código original.";
     partRegistrationMessage.className = "password-message error";
     return;
   }
+
+  if (hasPhoto && photoFile.size > 900 * 1024) {
+    partRegistrationMessage.textContent = "A foto deve ter até 900 KB.";
+    partRegistrationMessage.className = "password-message error";
+    return;
+  }
+
+  const photoDataUrl = hasPhoto ? await readFileAsDataUrl(photoFile) : "";
 
   const alreadyPending = partRegistrations.some((item) => {
     return item.status === "pending" && item.description.toLowerCase() === description.toLowerCase() && item.originalCode.toLowerCase() === originalCode.toLowerCase();
@@ -3186,6 +3276,8 @@ function createPartRegistration(data) {
     id: `CAD-${Date.now()}`,
     description,
     originalCode,
+    photoName: hasPhoto ? photoFile.name : "",
+    photoDataUrl,
     requestedBy: currentUser.name || currentUser.label,
     requestedByEmail: currentUser.email,
     createdAt: new Date().toISOString(),
@@ -3222,6 +3314,8 @@ function linkPendingRegistrationToInput(registration, input) {
   input.dataset.description = registration.description;
   input.dataset.registrationId = registration.id;
   input.dataset.originalCode = registration.originalCode;
+  input.dataset.photoName = registration.photoName || "";
+  input.dataset.photoDataUrl = registration.photoDataUrl || "";
   input.setCustomValidity("");
   activePartRegistrationInput = null;
 }
@@ -3259,6 +3353,7 @@ function renderPartRegistrations() {
           <strong>${escapeHtml(item.description)}</strong>
           <span>Código/Fabricante: ${escapeHtml(item.originalCode)}</span>
           <small>Solicitado: ${formatDateOrDash(item.createdAt)}</small>
+          ${item.photoDataUrl ? `<a class="file-link" href="${escapeAttr(item.photoDataUrl)}" download="${escapeAttr(item.photoName || "foto-peca.png")}" target="_blank" rel="noopener">Ver foto da peça</a>` : ""}
         </div>
         <label>
           <small>Código SAP</small>
@@ -3287,7 +3382,7 @@ function getRegistrationRequest(registration) {
   }) || null;
 }
 
-function completePartRegistration(id, code, finalDescription, useExisting = false) {
+async function completePartRegistration(id, code, finalDescription, useExisting = false) {
   if (!canManagePartRegistrations()) return;
   const cleanCode = String(code || "").trim();
   const registration = partRegistrations.find((item) => item.id === id);
@@ -3304,6 +3399,7 @@ function completePartRegistration(id, code, finalDescription, useExisting = fals
     customParts = customParts.filter((item) => String(item.code) !== cleanCode);
     customParts.unshift(part);
   }
+  const updatedRequests = [];
   requests = requests.map((request) => {
     let changed = false;
     const items = request.items.map((item) => {
@@ -3320,11 +3416,13 @@ function completePartRegistration(id, code, finalDescription, useExisting = fals
         isPendingRegistration: false,
         pendingRegistrationId: "",
         pendingOriginalCode: "",
+        pendingPhotoName: "",
+        pendingPhotoDataUrl: "",
       };
     });
     if (!changed) return request;
     const hasPendingRegistration = items.some(isPendingRegistrationItem);
-    return {
+    const updatedRequest = {
       ...request,
       items,
       status: hasPendingRegistration ? "cadastro" : "solicitacao",
@@ -3332,6 +3430,8 @@ function completePartRegistration(id, code, finalDescription, useExisting = fals
         ? request.response || "Solicitação aguardando cadastro de item."
         : "Cadastro SAP concluído. Solicitação liberada para atendimento do Almoxarifado.",
     };
+    updatedRequests.push(updatedRequest);
+    return updatedRequest;
   });
   partRegistrations = partRegistrations.map((item) =>
     item.id === id
@@ -3346,11 +3446,14 @@ function completePartRegistration(id, code, finalDescription, useExisting = fals
         }
       : item
   );
-  saveRequests();
+  await saveRequests();
   saveCustomParts();
   savePartRegistrations();
   renderPartRegistrations();
   render();
+  if (updatedRequests.length > 0) {
+    openPartRegistrationCompletedEmailDraft(updatedRequests[0], part, useExisting);
+  }
 }
 
 function findPartByCode(code) {
@@ -3863,10 +3966,10 @@ function canCurrentUserApprovePurchase() {
 
 function renderPurchaseOverview() {
   const purchaseRequests = requests
-    .filter((request) => !isPurchaseArrivalRegistered(request) && (request.status === "compra" || hasApprovedPurchasePending(request)))
+    .filter(isPurchaseQueuePending)
     .map((request) => ({
       request,
-      items: request.items.filter((item) => getPurchasePendingQty(item) > 0 && item.purchaseApproval === "approved"),
+      items: request.items.filter((item) => isPurchaseItemActive(request, item)),
     }))
     .filter(({ items }) => items.length > 0);
 
@@ -4131,12 +4234,27 @@ function openPartRegistrationEmailDraft(request) {
     { title: "Dados da Solicitação", content: `Solicitação: ${request.id}\nSolicitante: ${request.requestedBy}\nManutentor: ${request.maintainer || "-"}\nAplicação: ${targetLabel}\nPrioridade: ${request.priority}\nData: ${formatDate(request.createdAt)}` },
     { title: "Itens para Cadastro", content: formatEmailItems(pendingItems, (item) => item.quantity, (item) => [
       `CÓDIGO ORIGINAL: ${item.pendingOriginalCode || "-"}`,
+      `FOTO: ${item.pendingPhotoName ? `${item.pendingPhotoName} - disponível no ManuPeças` : "Não anexada"}`,
       `STATUS: Aguardando cadastro SAP`,
     ]) },
     { title: "Solicitação completa", content: formatEmailItems(request.items, (item) => item.quantity, (item) => [
       isPendingRegistrationItem(item) ? "OBS.: item aguardando código SAP" : "",
     ]) },
     { title: "Motivo", content: request.reason },
+  ]);
+
+  setTimeout(() => openMailDraft(recipients, subject, bodyText), 250);
+}
+
+function openPartRegistrationCompletedEmailDraft(request, part, useExisting = false) {
+  const recipients = getEmailRecipients("registration", `${userLoginToEmail("jessica.lopes")}; ${userLoginToEmail("erik.barreto")}; ${userLoginToEmail("bruno.medici")}`);
+  const subject = buildEmailSubject(request, "Cadastro SAP concluído");
+  const bodyText = buildEmailBody("Cadastro SAP Concluído", `O cadastro de item da solicitação ${request.id} foi concluído e a solicitação está liberada para atendimento do Almoxarifado.`, [
+    { title: "Dados da Solicitação", content: `Solicitação: ${request.id}\nSolicitante: ${request.requestedBy || "-"}\nManutentor: ${request.maintainer || "-"}\nAplicação: ${getRequestTargetLabel(request)}\nPrioridade: ${request.priority}` },
+    { title: "Item cadastrado", content: formatEmailItems([part], () => 1, () => [
+      `TIPO: ${useExisting ? "Cadastro já existente no SAP" : "Novo cadastro SAP"}`,
+    ]) },
+    { title: "Próxima etapa", content: "Atendimento do Almoxarifado." },
   ]);
 
   setTimeout(() => openMailDraft(recipients, subject, bodyText), 250);

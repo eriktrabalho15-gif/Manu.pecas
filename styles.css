@@ -2198,12 +2198,10 @@ body[data-role="compras"] .tab-button[data-page="pending"],
 body[data-role="compras"] .approval-tab,
 body[data-role="cd"] .approval-tab,
 body[data-role="cd"] .purchase-tab,
-body[data-role="cd"] .filters,
 body[data-role="cd"] .metrics-grid,
 body[data-role="pcm"] .approval-tab,
 body[data-role="almox"] .approval-tab,
 body[data-role="almox"] .purchase-tab,
-body[data-role="almox"] .filter-button[data-filter="cd"],
 body:not([data-role="admin"]) .admin-tab,
 body:not([data-role="admin"]) .part-admin-tab,
 body:not([data-role="admin"]) .email-admin-tab,
@@ -2211,6 +2209,12 @@ body[data-role="pcm"] .almox-actions,
 body[data-role="manager"] .almox-actions,
 body[data-role="compras"] .almox-actions,
 body[data-role="admin"] .almox-actions {
+  display: none;
+}
+
+body[data-role="cd"] .filter-button[data-filter="solicitacao"],
+body[data-role="cd"] .filter-button[data-filter="atendimento"],
+body[data-role="cd"] .filter-button[data-filter="compra"] {
   display: none;
 }
 
