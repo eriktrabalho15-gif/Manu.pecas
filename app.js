@@ -562,11 +562,10 @@ function getUserNotifications() {
   };
 
   requests.forEach((request) => {
-    const isMine = request.requestedByEmail === currentUser.email || request.requestedBy === currentUser.name;
-    if (currentUser.role === "pcm" && isMine && hasPickupPending(request)) {
+    if (currentUser.role === "pcm" && hasPickupPending(request)) {
       push(request, "retirada", "Item liberado para retirada", "atendimento");
     }
-    if (currentUser.role === "pcm" && isMine && hasPurchasedItemWaitingReceipt(request)) {
+    if (currentUser.role === "pcm" && hasPurchasedItemWaitingReceipt(request)) {
       push(request, "chegada-compra", "Item comprado chegou", "compra", "history", getReceiptPendingItems(request).length);
     }
     if (currentUser.role === "almox") {
@@ -1798,8 +1797,6 @@ function render() {
 
   const visible = requests.filter((request) => {
     if (currentUser.role === "pcm") {
-      const isMine = request.requestedByEmail === currentUser.email || request.requestedBy === currentUser.name;
-      if (!isMine) return false;
       if (currentFilter === "atendimento") return hasPickupPending(request);
       if (currentFilter === "compra") return request.status === "aprovacao" || request.status === "compra" || request.status === "recebimento" || request.status === "reprovado";
       if (currentFilter === "solicitacao") return request.status === "solicitacao" || request.status === "cadastro";
@@ -1837,7 +1834,7 @@ function createCard(request) {
   const pickupOnlyView = currentFilter === "atendimento" && (currentUser.role === "almox" || currentUser.role === "pcm") && hasPickupPending(request);
   const receiptOnlyView = currentFilter === "recebimento" && getDisplayStatus(request) === "recebimento";
   const purchaseOnlyView = currentFilter === "compra" && currentUser.role === "almox";
-  const displayItems = request.items;
+  const displayItems = getDisplayItemsForCurrentView(request);
   const status = card.querySelector(".status-pill");
   const response = card.querySelector(".response");
   const note = card.querySelector("textarea");
@@ -1916,7 +1913,8 @@ function createCard(request) {
   purchaseWorkflow.classList.remove("active");
   card.querySelector(".process-map").innerHTML = createProcessMap(pickupOnlyView ? { ...request, status: "atendimento" } : request);
 
-  request.items.forEach((item, index) => {
+  displayItems.forEach((item) => {
+    const index = request.items.indexOf(item);
     const li = document.createElement("li");
     li.innerHTML = `
       <strong>${item.code}</strong>
@@ -2591,6 +2589,25 @@ function getPurchasePendingQty(item) {
 
 function getPurchasePendingQtySum(request) {
   return request.items.reduce((sum, item) => sum + getPurchasePendingQty(item), 0);
+}
+
+function getDisplayItemsForCurrentView(request) {
+  if (!request?.items) return [];
+  if (currentFilter === "cd" || currentUser?.role === "cd") {
+    return request.items.filter((item) => getCdPendingQty(item) > 0);
+  }
+  if (currentFilter === "recebimento") {
+    return getReceiptPendingItems(request);
+  }
+  if (currentFilter === "atendimento" && (currentUser?.role === "pcm" || currentUser?.role === "almox")) {
+    const pickupItems = request.items.filter(isPickupItemPending);
+    return pickupItems.length ? pickupItems : request.items;
+  }
+  if (currentFilter === "compra") {
+    const purchaseItems = request.items.filter((item) => getPurchasePendingQty(item) > 0);
+    return purchaseItems.length ? purchaseItems : request.items;
+  }
+  return request.items;
 }
 
 function hasPurchaseApprovalPending(request) {
@@ -3838,10 +3855,6 @@ function approvePurchase(id, mode = "all", selectedCodes = []) {
 
 function renderPurchaseOverview() {
   const purchaseRequests = requests
-    .filter((request) => {
-      if (currentUser.role !== "pcm") return true;
-      return request.requestedByEmail === currentUser.email || request.requestedBy === currentUser.name;
-    })
     .filter((request) => !isPurchaseArrivalRegistered(request) && (request.status === "compra" || hasApprovedPurchasePending(request)))
     .map((request) => ({
       request,
