@@ -1,4 +1,4 @@
-﻿const REQUESTS_KEY = "pecas-transporte-solicitacoes-v4";
+const REQUESTS_KEY = "pecas-transporte-solicitacoes-v4";
 const SESSION_KEY = "pecas-transporte-sessao";
 const THEME_KEY = "pecas-transporte-tema";
 const USERS_KEY = "pecas-transporte-usuarios";
@@ -7,9 +7,6 @@ const NOTIFICATION_READ_KEY = "pecas-transporte-notificacoes-lidas";
 const CUSTOM_PARTS_KEY = "pecas-transporte-pecas-cadastradas";
 const PART_REGISTRATIONS_KEY = "pecas-transporte-cadastros-pecas";
 const EMAIL_SETTINGS_KEY = "pecas-transporte-email-config";
-const HISTORY_PURGE_KEY = "manupecas-limpeza-historico-20260812-oficial-03";
-const TARGETED_DELETE_KEY = "manupecas-remover-bp-0002-20260812";
-const TARGETED_DELETE_REQUEST_IDS = ["BP - 0002"];
 const supabaseClient = window.manuPecasSupabase || null;
 
 const partsCatalog = Array.isArray(globalThis.PARTS_CATALOG) ? globalThis.PARTS_CATALOG : [];
@@ -241,7 +238,7 @@ passwordForm.addEventListener("submit", (event) => {
 requestTarget.addEventListener("change", syncRequestTarget);
 syncRequestTarget();
 
-form.addEventListener("submit", (event) => {
+form.addEventListener("submit", async (event) => {
   event.preventDefault();
   const data = new FormData(form);
   const targetType = data.get("requestTarget") || "prefixo";
@@ -277,7 +274,7 @@ form.addEventListener("submit", (event) => {
 
   requests = [request, ...requests];
   linkPartRegistrationsToRequest(request);
-  saveRequests();
+  await saveRequests();
 
   openEmailDraft(request, "");
   if (request.status === "cadastro") {
@@ -479,7 +476,6 @@ async function startApp() {
   currentFilter = currentUser.role === "cd" ? "cd" : "solicitacao";
   resetItemLines();
   await syncFromSupabase();
-  await deleteTargetedTestRequestsOnce();
   mirrorRequestsToStructuredTables(requests);
   mirrorCustomPartsToStructuredTable(customParts);
   setPage(currentPage);
@@ -641,7 +637,7 @@ function renderNotifications() {
   }
   notificationList.innerHTML = unreadNotifications.map((item) => `
     <button class="notification-item unread" type="button" data-id="${item.id}" data-filter="${item.filter}" data-page="${item.page}">
-      <i class="notification-item-icon" aria-hidden="true">🔔</i>
+      <i class="notification-item-icon" aria-hidden="true">??</i>
       <strong>${item.title}</strong>
       <span>${item.description}</span>
     </button>
@@ -907,67 +903,6 @@ async function flushSupabaseWrites() {
   await Promise.allSettled([...pendingSupabaseWrites]);
 }
 
-async function purgeHistoryOnce() {
-  if (localStorage.getItem(HISTORY_PURGE_KEY) === "done") return;
-  requests = [];
-  partRegistrations = [];
-  localStorage.setItem(REQUESTS_KEY, JSON.stringify(requests));
-  localStorage.setItem(PART_REGISTRATIONS_KEY, JSON.stringify(partRegistrations));
-
-  if (supabaseClient) {
-    try {
-      const results = await Promise.all([
-        supabaseClient.from("manupecas_requests").delete().neq("id", "__never__"),
-        supabaseClient.from("manupecas_part_registrations").delete().neq("id", "__never__"),
-        supabaseClient.from("atendimentos_cd").delete().neq("id", "00000000-0000-0000-0000-000000000000"),
-        supabaseClient.from("compras").delete().neq("id", "00000000-0000-0000-0000-000000000000"),
-        supabaseClient.from("recebimentos").delete().neq("id", "00000000-0000-0000-0000-000000000000"),
-        supabaseClient.from("solicitacao_itens").delete().neq("id", "00000000-0000-0000-0000-000000000000"),
-        supabaseClient.from("solicitacoes").delete().neq("id", "00000000-0000-0000-0000-000000000000"),
-      ]);
-      results.forEach(({ error }) => {
-        if (error) console.warn("Erro ao limpar histórico remoto:", error.message);
-      });
-    } catch (error) {
-      console.warn("Não foi possível limpar o histórico remoto.", error);
-    }
-  }
-
-  localStorage.setItem(HISTORY_PURGE_KEY, "done");
-}
-
-async function deleteTargetedTestRequestsOnce() {
-  if (!["admin", "manager"].includes(currentUser?.role)) return;
-  if (localStorage.getItem(TARGETED_DELETE_KEY) === "done") return;
-
-  const ids = TARGETED_DELETE_REQUEST_IDS;
-  const beforeCount = requests.length;
-  requests = requests.filter((request) => !ids.includes(request.id));
-  if (requests.length !== beforeCount) {
-    localStorage.setItem(REQUESTS_KEY, JSON.stringify(requests));
-  }
-
-  if (supabaseClient) {
-    try {
-      const results = await Promise.allSettled([
-        supabaseClient.from("manupecas_requests").delete().in("id", ids),
-        supabaseClient.from("atendimentos_cd").delete().in("solicitacao_numero", ids),
-        supabaseClient.from("compras").delete().in("solicitacao_numero", ids),
-        supabaseClient.from("recebimentos").delete().in("solicitacao_numero", ids),
-        supabaseClient.from("solicitacoes").delete().in("numero", ids),
-      ]);
-      results.forEach((result) => {
-        const error = result.value?.error || result.reason;
-        if (error) console.warn("Erro ao remover solicitação de teste:", error.message || error);
-      });
-    } catch (error) {
-      console.warn("Não foi possível remover a solicitação de teste.", error);
-    }
-  }
-
-  localStorage.setItem(TARGETED_DELETE_KEY, "done");
-}
-
 async function loadSupabaseRows(table, keyField) {
   const { data, error } = await supabaseClient.from(table).select(`${keyField}, data`);
   if (error) {
@@ -1094,6 +1029,73 @@ function upsertSupabaseRows(table, keyField, rows) {
   const payload = rows.map((row) => ({ [keyField]: row[keyField], data: row, updated_at: new Date().toISOString() }));
   if (payload.length === 0) return Promise.resolve();
   return trackSupabaseWrite(supabaseClient.from(table).upsert(payload, { onConflict: keyField }), table);
+}
+
+async function upsertMergedRequestRows(rows) {
+  if (!supabaseClient || rows.length === 0) return Promise.resolve();
+  const ids = rows.map((row) => row.id).filter(Boolean);
+  if (ids.length === 0) return Promise.resolve();
+
+  const { data, error } = await supabaseClient
+    .from("manupecas_requests")
+    .select("id, data")
+    .in("id", ids);
+
+  if (error) {
+    setSupabaseStatus("error", "Supabase: erro ao validar solicitações");
+    console.warn("Erro ao validar solicitações antes de salvar:", error.message);
+    return { error };
+  }
+
+  const remoteById = new Map((data || []).map((row) => [row.id, normalizeRequest(row.data)]));
+  const mergedRows = rows.map((row) => mergeRequestByProgress(row, remoteById.get(row.id)));
+  const mergedById = new Map(mergedRows.map((row) => [row.id, row]));
+  requests = requests.map((request) => mergedById.get(request.id) || request);
+  localStorage.setItem(REQUESTS_KEY, JSON.stringify(requests));
+
+  return upsertSupabaseRows("manupecas_requests", "id", mergedRows);
+}
+
+function mergeRequestByProgress(localRequest, remoteRequest) {
+  if (!remoteRequest) return localRequest;
+  const localScore = getRequestProgressScore(localRequest);
+  const remoteScore = getRequestProgressScore(remoteRequest);
+  if (remoteScore > localScore) return remoteRequest;
+  if (localScore > remoteScore) return localRequest;
+  return getRequestLastChange(remoteRequest) > getRequestLastChange(localRequest) ? remoteRequest : localRequest;
+}
+
+function getRequestProgressScore(request) {
+  const itemScore = (request.items || []).reduce((score, item) => score
+    + (Number(item.availableQty) || 0) * 2
+    + (Number(item.cdPendingQty) || 0) * 2
+    + (Number(item.cdQty) || 0) * 3
+    + (Number(item.purchaseQty) || 0) * 3
+    + (Number(item.purchaseReceivedQty) || 0) * 4
+    + (Number(item.cdReceivedQty) || 0) * 4
+    + (Number(item.withdrawnQty) || 0) * 5
+    + (item.purchaseApproval === "approved" || item.purchaseApproval === "rejected" ? 3 : 0), 0);
+  return itemScore + getRequestStageDates(request).length * 10 + getStatusRank(getDisplayStatus(request)) * 20;
+}
+
+function getStatusRank(status) {
+  const ranks = {
+    solicitacao: 1,
+    cadastro: 1,
+    cd: 2,
+    aprovacao: 3,
+    compra: 4,
+    recebimento: 5,
+    atendimento: 6,
+    reprovado: 6,
+    retirado: 7,
+  };
+  return ranks[status] || 0;
+}
+
+function getRequestLastChange(request) {
+  const dates = getRequestStageDates(request).map((date) => new Date(date).getTime()).filter((time) => Number.isFinite(time));
+  return dates.length ? Math.max(...dates) : 0;
 }
 
 function toNullableIso(value) {
@@ -1361,10 +1363,7 @@ function deleteSupabaseRow(table, keyField, keyValue) {
 
 function saveRequests() {
   localStorage.setItem(REQUESTS_KEY, JSON.stringify(requests));
-  return Promise.allSettled([
-    upsertSupabaseRows("manupecas_requests", "id", requests),
-    trackSupabaseWrite(mirrorRequestsToStructuredTables(requests), "solicitações estruturadas"),
-  ]);
+  return upsertMergedRequestRows(requests).then(() => trackSupabaseWrite(mirrorRequestsToStructuredTables(requests), "solicitações estruturadas"));
 }
 
 function loadManagedUsers() {
@@ -1872,7 +1871,7 @@ function createCard(request) {
   status.className = `status-pill status-${displayStatus}`;
   card.querySelector(".request-summary").addEventListener("click", () => card.classList.toggle("expanded"));
   card.querySelector(".request-code").textContent = request.id;
-  card.querySelector("h3").textContent = displayItems.map((item) => item.description).join(", ");
+  card.querySelector("h3").textContent = createRequestCardTitle(request, displayItems);
   card.querySelector(".sla-pill").textContent = `SLA ${formatDuration(request.createdAt, new Date().toISOString())}`;
   card.querySelector(".bus-summary").textContent = getRequestTargetLabel(request);
   card.querySelector(".items-summary").textContent = formatItemCount(displayItems.length);
@@ -2090,7 +2089,7 @@ function createCard(request) {
     doneButton.className = "action reset";
     doneButton.type = "button";
     doneButton.textContent = "Confirmar retirada do PCM";
-    doneButton.addEventListener("click", () => {
+    doneButton.addEventListener("click", async () => {
       const praxio = pickupFields.querySelector(".pickup-praxio").value.trim();
       const person = pickupFields.querySelector(".pickup-person").value.trim();
       const message = pickupFields.querySelector(".pickup-message");
@@ -2105,13 +2104,18 @@ function createCard(request) {
         return;
       }
       if (confirmAlmoxPassword()) {
-        markWithdrawn(request.id, note.value || "Itens retirados pelo PCM.", { praxio, person });
+        await markWithdrawn(request.id, note.value || "Itens retirados pelo PCM.", { praxio, person });
       }
     });
     actionGrid.append(doneButton);
   }
 
   return card;
+}
+
+function createRequestCardTitle(request, items) {
+  const count = items.length || request.items?.length || 0;
+  return `${formatItemCount(count)} nesta solicitação`;
 }
 
 function createFulfillmentLine(item, index) {
@@ -2192,7 +2196,7 @@ function createCdFulfillmentLine(item, index) {
   return row;
 }
 
-function saveFulfillment(id, card, shouldEmail) {
+async function saveFulfillment(id, card, shouldEmail) {
   const request = requests.find((item) => item.id === id);
   if (!request) return;
 
@@ -2226,7 +2230,7 @@ function saveFulfillment(id, card, shouldEmail) {
   updatedRequest.almoxByEmail = currentUser.email;
 
   requests = requests.map((item) => (item.id === id ? updatedRequest : item));
-  saveRequests();
+  await saveRequests();
 
   openAlmoxEmailDraft(updatedRequest, "");
 
@@ -2287,7 +2291,7 @@ async function saveCdFulfillment(id, card, shouldEmail) {
   };
 
   requests = requests.map((item) => (item.id === id ? updatedRequest : item));
-  saveRequests();
+  await saveRequests();
 
   if (shouldEmail) {
     openCdEmailDraft(updatedRequest, "");
@@ -2296,7 +2300,7 @@ async function saveCdFulfillment(id, card, shouldEmail) {
   render();
 }
 
-function savePurchaseOrder(id, card, shouldEmail) {
+async function savePurchaseOrder(id, card, shouldEmail) {
   if (currentUser.role !== "compras") return;
   const request = requests.find((item) => item.id === id);
   if (!request) return;
@@ -2328,7 +2332,7 @@ function savePurchaseOrder(id, card, shouldEmail) {
   };
 
   requests = requests.map((item) => (item.id === id ? updatedRequest : item));
-  saveRequests();
+  await saveRequests();
 
   if (purchaseOrder) {
     openPurchaseEmailDraft(updatedRequest, "");
@@ -2337,7 +2341,7 @@ function savePurchaseOrder(id, card, shouldEmail) {
   render();
 }
 
-function saveSapRequestNumber(id, card) {
+async function saveSapRequestNumber(id, card) {
   if (currentUser.role !== "almox") return;
   const request = requests.find((item) => item.id === id);
   if (!request) return;
@@ -2355,11 +2359,11 @@ function saveSapRequestNumber(id, card) {
     response: `Solicitação SAP registrada pelo Almoxarifado: ${sapRequestNumber}. Pendente atualização de Compras com pedido, previsão e acompanhamento.`,
   };
   requests = requests.map((item) => (item.id === id ? updatedRequest : item));
-  saveRequests();
+  await saveRequests();
   render();
 }
 
-function registerPurchaseArrival(id, card) {
+async function registerPurchaseArrival(id, card) {
   if (currentUser.role !== "almox") return;
   const request = requests.find((item) => item.id === id);
   if (!request) return;
@@ -2379,7 +2383,7 @@ function registerPurchaseArrival(id, card) {
   };
 
   requests = requests.map((item) => (item.id === id ? updatedRequest : item));
-  saveRequests();
+  await saveRequests();
   openPurchaseArrivalEmailDraft(updatedRequest, "");
   render();
 }
@@ -2454,7 +2458,7 @@ async function confirmReceiptEntry(id, card) {
   };
 
   requests = requests.map((item) => (item.id === id ? updatedRequest : item));
-  saveRequests();
+  await saveRequests();
   openReceiptEmailDraft(updatedRequest, "");
   render();
 }
@@ -2483,7 +2487,7 @@ function confirmAlmoxPassword() {
   return true;
 }
 
-function markWithdrawn(id, response, pickupData = {}) {
+async function markWithdrawn(id, response, pickupData = {}) {
   requests = requests.map((request) => {
     if (request.id !== id) return request;
     const now = new Date().toISOString();
@@ -2506,7 +2510,7 @@ function markWithdrawn(id, response, pickupData = {}) {
       withdrawnAt: allWithdrawn ? now : request.withdrawnAt || "",
     };
   });
-  saveRequests();
+  await saveRequests();
   render();
 }
 
@@ -3763,7 +3767,7 @@ function renderApprovalQueue() {
   approvalRequests.forEach(({ request, items }) => {
     const row = document.createElement("article");
     row.className = "history-row approval-request-row";
-    const canApprove = currentUser.role === "manager";
+    const canApprove = canCurrentUserApprovePurchase();
     row.innerHTML = `
       <button class="history-summary" type="button" aria-expanded="false">
         <div>
@@ -3806,8 +3810,8 @@ function renderApprovalQueue() {
   });
 }
 
-function approvePurchase(id, mode = "all", selectedCodes = []) {
-  if (currentUser.role !== "manager") return;
+async function approvePurchase(id, mode = "all", selectedCodes = []) {
+  if (!canCurrentUserApprovePurchase()) return;
   if ((mode === "selected" || mode === "reject-selected") && selectedCodes.length === 0) {
     window.alert("Selecione pelo menos um item para aplicar essa decisão.");
     return;
@@ -3847,10 +3851,14 @@ function approvePurchase(id, mode = "all", selectedCodes = []) {
     };
     return approvedRequest;
   });
-  saveRequests();
+  await saveRequests();
   if (approvedRequest) openApprovalEmailDraft(approvedRequest, "");
   render();
   renderApprovalQueue();
+}
+
+function canCurrentUserApprovePurchase() {
+  return currentUser?.role === "manager" || String(currentUser?.label || "").toLowerCase() === "gerente";
 }
 
 function renderPurchaseOverview() {
@@ -3941,7 +3949,7 @@ function renderPurchaseOverview() {
   });
 }
 
-function savePurchaseDelivery(id, purchaseOrder, deliveryDate, buyerNote = "") {
+async function savePurchaseDelivery(id, purchaseOrder, deliveryDate, buyerNote = "") {
   if (currentUser.role !== "compras") return;
   const cleanOrder = String(purchaseOrder || "").trim();
   if (!cleanOrder) {
@@ -3971,7 +3979,7 @@ function savePurchaseDelivery(id, purchaseOrder, deliveryDate, buyerNote = "") {
     };
     return updatedRequest;
   });
-  saveRequests();
+  await saveRequests();
   if (updatedRequest) {
     openPurchaseEmailDraft(updatedRequest, "");
   }
@@ -4087,12 +4095,12 @@ function getEmailRecipients(step, fallback = "") {
   };
 }
 
-async function openMailDraft(to, subject, bodyText) {
+function openMailDraft(to, subject, bodyText) {
   const recipients = typeof to === "object" && to !== null ? to : { to };
   const recipient = String(recipients.to || "").trim();
   const cc = String(recipients.cc || "").trim();
   const ccParam = cc ? `&cc=${encodeURIComponent(cc)}` : "";
-  await flushSupabaseWrites();
+  flushSupabaseWrites();
   window.location.href = `mailto:${encodeURIComponent(recipient)}?subject=${encodeURIComponent(subject)}${ccParam}&body=${encodeURIComponent(bodyText)}`;
 }
 
@@ -4293,6 +4301,7 @@ function formatDate(value) {
     minute: "2-digit",
   }).format(new Date(value));
 }
+
 
 
 
