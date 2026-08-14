@@ -107,6 +107,7 @@ let activePartRegistrationInput = null;
 let userAccessFeedback = null;
 let pendingSupabaseWrites = [];
 let preparedMailPopup = null;
+let isSubmittingRequest = false;
 
 const body = document.body;
 const loginForm = document.querySelector("#login-form");
@@ -245,63 +246,90 @@ syncRequestTarget();
 
 form.addEventListener("submit", async (event) => {
   event.preventDefault();
-  const data = new FormData(form);
-  const targetType = data.get("requestTarget") || "prefixo";
-  const bus = targetType === "frota" ? "Frota" : data.get("bus").trim();
-  const items = collectItems();
+  if (isSubmittingRequest) return;
 
-  if (targetType === "prefixo" && !bus) {
-    busInput.focus();
-    return;
+  const submitButton = form.querySelector('[type="submit"]');
+  isSubmittingRequest = true;
+  if (submitButton) {
+    submitButton.disabled = true;
+    submitButton.dataset.originalText = submitButton.textContent;
+    submitButton.textContent = "Registrando...";
   }
 
-  if (items.length === 0) {
-    addItemLine();
-    return;
+  try {
+    const data = new FormData(form);
+    const targetType = data.get("requestTarget") || "prefixo";
+    const bus = targetType === "frota" ? "Frota" : data.get("bus").trim();
+    const items = collectItems();
+
+    if (targetType === "prefixo" && !bus) {
+      busInput.focus();
+      return;
+    }
+
+    if (items.length === 0) {
+      addItemLine();
+      return;
+    }
+
+    prepareMailPopup();
+    await syncFromSupabase();
+
+    const draftRequest = {
+      id: "",
+      bus,
+      targetType,
+      maintainer: data.get("maintainer").trim(),
+      items,
+      priority: data.get("priority"),
+      reason: data.get("reason").trim(),
+      status: items.some(isPendingRegistrationItem) ? "cadastro" : "solicitacao",
+      response: "",
+      createdAt: new Date().toISOString(),
+      requestedBy: currentUser.name || currentUser.label,
+      requestedByEmail: currentUser.email,
+      almoxBy: "",
+      almoxByEmail: "",
+    };
+    const recentDuplicate = findRecentDuplicateRequest(draftRequest);
+    const request = recentDuplicate || { ...draftRequest, id: await makeCode() };
+
+    if (!recentDuplicate) {
+      requests = [request, ...requests];
+      linkPartRegistrationsToRequest(request);
+      await saveRequests();
+    }
+
+    const savedRequest = requests.find((item) => item.id === request.id) || requests.find((item) => isSameLogicalRequest(item, request)) || request;
+    if (savedRequest.id !== request.id) {
+      linkPartRegistrationsToRequest(savedRequest);
+      await savePartRegistrations();
+    }
+
+    if (!recentDuplicate) {
+      if (savedRequest.status === "cadastro") {
+        openPartRegistrationEmailDraft(savedRequest);
+      } else {
+        openEmailDraft(savedRequest, "");
+      }
+    } else {
+      window.alert(`Solicitação duplicada bloqueada. A solicitação ${recentDuplicate.id} já foi registrada.`);
+    }
+
+    form.reset();
+    syncRequestTarget();
+    resetItemLines();
+    currentFilter = "solicitacao";
+    syncFilterButtons();
+    setPage("pending");
+    render();
+  } finally {
+    isSubmittingRequest = false;
+    if (submitButton) {
+      submitButton.disabled = false;
+      submitButton.textContent = submitButton.dataset.originalText || "Registrar solicitação";
+    }
   }
-
-  prepareMailPopup();
-  await syncFromSupabase();
-
-  const request = {
-    id: await makeCode(),
-    bus,
-    targetType,
-    maintainer: data.get("maintainer").trim(),
-    items,
-    priority: data.get("priority"),
-    reason: data.get("reason").trim(),
-    status: items.some(isPendingRegistrationItem) ? "cadastro" : "solicitacao",
-    response: "",
-    createdAt: new Date().toISOString(),
-    requestedBy: currentUser.name || currentUser.label,
-    requestedByEmail: currentUser.email,
-    almoxBy: "",
-    almoxByEmail: "",
-  };
-
-  requests = [request, ...requests];
-  linkPartRegistrationsToRequest(request);
-  await saveRequests();
-  const savedRequest = requests.find((item) => item.id === request.id) || requests.find((item) => isSameLogicalRequest(item, request)) || request;
-  if (savedRequest.id !== request.id) {
-    linkPartRegistrationsToRequest(savedRequest);
-    await savePartRegistrations();
-  }
-
-  if (savedRequest.status === "cadastro") {
-    openPartRegistrationEmailDraft(savedRequest);
-  } else {
-    openEmailDraft(savedRequest, "");
-  }
-
-  form.reset();
-  syncRequestTarget();
-  resetItemLines();
-  currentFilter = "solicitacao";
-  syncFilterButtons();
-  setPage("pending");
-  render();
 });
 
 addItemButton.addEventListener("click", () => addItemLine());
@@ -496,7 +524,21 @@ async function startApp() {
   if (repairReceivedItemsStuckInReceipt()) {
     await saveRequests();
   }
+  if (repairReceiptReleasedItemsToPickup()) {
+    await saveRequests();
+  }
   if (repairInvalidSapTestRequests()) {
+    await saveRequests();
+  }
+  if (await repairWrongOilCapCode()) {
+    await saveRequests();
+    saveCustomParts();
+    savePartRegistrations();
+  }
+  if (repairRejectedCancellationsStuckInReview()) {
+    await saveRequests();
+  }
+  if (await repairDuplicatePendingRequests()) {
     await saveRequests();
   }
   if (migratePurchaseApprovalBacklog()) {
@@ -971,7 +1013,7 @@ function repairReceivedItemsStuckInReceipt() {
     let repairedItem = false;
     const items = request.items.map((item) => {
       const cdQty = Number(item.cdQty) || 0;
-      const purchaseQty = isPurchaseArrivalRegistered(request) ? Number(item.purchaseQty) || 0 : 0;
+      const purchaseQty = 0;
       if (cdQty <= 0 && purchaseQty <= 0) return item;
 
       repairedItem = true;
@@ -1002,6 +1044,32 @@ function repairReceivedItemsStuckInReceipt() {
   return changed;
 }
 
+function repairReceiptReleasedItemsToPickup() {
+  let changed = false;
+
+  requests = requests.map((request) => {
+    if (!hasPickupPending(request)) return request;
+    const displayStatus = getDisplayStatus(request);
+    if (!["recebimento", "compra"].includes(request.status) && displayStatus !== "recebimento") return request;
+    const hasReceivedItem = request.items.some((item) =>
+      (Number(item.cdReceivedQty) || 0) > 0
+      || (Number(item.purchaseReceivedQty) || 0) > 0
+      || Boolean(item.receiptNumber || item.receiptAt)
+    );
+    if (!hasReceivedItem) return request;
+
+    changed = true;
+    return {
+      ...request,
+      status: "atendimento",
+      pickupAt: request.pickupAt || request.receiptAt || new Date().toISOString(),
+      response: request.response || "Item recebido e liberado para retirada do PCM.",
+    };
+  });
+
+  return changed;
+}
+
 function repairInvalidSapTestRequests() {
   let changed = false;
 
@@ -1018,6 +1086,69 @@ function repairInvalidSapTestRequests() {
       sapRequestAt: sapRequestNumber ? request.sapRequestAt || "" : "",
       sapRequestBy: sapRequestNumber ? request.sapRequestBy || "" : "",
       response,
+    };
+  });
+
+  return changed;
+}
+
+async function repairWrongOilCapCode() {
+  const wrongCode = "30027492";
+  const rightCode = "30027495";
+  const rightDescription = "A 990 010 38 00 - TAMPA DE ENCHIMENTO DE ÓLEO MB 1721";
+  let changed = false;
+
+  const fixPart = (part) => {
+    if (String(part?.code || "").trim() !== wrongCode) return part;
+    changed = true;
+    return { ...part, code: rightCode, description: part.description || rightDescription };
+  };
+
+  requests = requests.map((request) => {
+    let requestChanged = false;
+    const items = (request.items || []).map((item) => {
+      if (String(item.code || "").trim() !== wrongCode) return item;
+      requestChanged = true;
+      changed = true;
+      return { ...item, code: rightCode, description: item.description || rightDescription };
+    });
+    return requestChanged ? { ...request, items } : request;
+  });
+
+  customParts = customParts
+    .map(fixPart)
+    .filter((part, index, list) => list.findIndex((item) => String(item.code || "").trim() === String(part.code || "").trim()) === index);
+
+  partRegistrations = partRegistrations.map((registration) => {
+    if (String(registration.createdCode || "").trim() !== wrongCode) return registration;
+    changed = true;
+    return {
+      ...registration,
+      createdCode: rightCode,
+      createdDescription: registration.createdDescription || rightDescription,
+    };
+  });
+
+  if (changed && supabaseClient) {
+    await Promise.all([
+      deleteSupabaseRow("manupecas_custom_parts", "code", wrongCode),
+      deleteSupabaseRow("itens", "codigo_sap", wrongCode),
+    ]);
+  }
+
+  return changed;
+}
+
+function repairRejectedCancellationsStuckInReview() {
+  let changed = false;
+
+  requests = requests.map((request) => {
+    if (request.status !== "cancelamento" || !request.cancellationRejectedAt || request.cancellationApprovedAt) return request;
+    changed = true;
+    return {
+      ...request,
+      status: resolveCancellationRestoredStatus(request),
+      response: request.response || "Cancelamento recusado. Solicitação mantida em aberto.",
     };
   });
 
@@ -1341,6 +1472,90 @@ function getRequestItemSignature(request) {
       Number(item.quantity) || 0,
     ].join("|"))
     .join("||");
+}
+
+function getRequestDuplicateSignature(request) {
+  return [
+    normalizeLogin(request?.requestedByEmail || request?.requestedBy || ""),
+    String(request?.targetType || "").trim().toLowerCase(),
+    String(request?.bus || "").trim().toLowerCase(),
+    String(request?.maintainer || "").trim().toLowerCase(),
+    String(request?.priority || "").trim().toLowerCase(),
+    String(request?.reason || "").trim().toLowerCase(),
+    getRequestItemSignature(request),
+  ].join("##");
+}
+
+function isRequestEarlyStage(request) {
+  if (!request) return false;
+  const displayStatus = getDisplayStatus(request);
+  const allowedStatuses = ["solicitacao", "cadastro"];
+  const untouchedItems = (request.items || []).every((item) =>
+    (Number(item.availableQty) || 0) === 0
+    && (Number(item.cdPendingQty) || 0) === 0
+    && (Number(item.cdQty) || 0) === 0
+    && (Number(item.purchaseQty) || 0) === 0
+    && (Number(item.withdrawnQty) || 0) === 0
+  );
+  return allowedStatuses.includes(displayStatus)
+    && untouchedItems
+    && !request.attendedAt
+    && !request.cdAt
+    && !request.purchaseAt
+    && !request.receiptAt
+    && !request.pickupAt
+    && !request.withdrawnAt
+    && !request.cancellationRequestedAt;
+}
+
+function areRequestsCreatedClose(first, second, maxMinutes = 10) {
+  const firstTime = new Date(first?.createdAt || "").getTime();
+  const secondTime = new Date(second?.createdAt || "").getTime();
+  if (!Number.isFinite(firstTime) || !Number.isFinite(secondTime)) return false;
+  return Math.abs(firstTime - secondTime) <= maxMinutes * 60 * 1000;
+}
+
+function findRecentDuplicateRequest(draftRequest) {
+  const signature = getRequestDuplicateSignature(draftRequest);
+  return requests.find((request) =>
+    isRequestEarlyStage(request)
+    && getRequestDuplicateSignature(request) === signature
+    && areRequestsCreatedClose(request, draftRequest, 10)
+  );
+}
+
+async function repairDuplicatePendingRequests() {
+  const keepBySignature = new Map();
+  const duplicateIds = [];
+  const cleaned = [];
+
+  [...requests]
+    .sort((a, b) => (new Date(a.createdAt || 0).getTime() || 0) - (new Date(b.createdAt || 0).getTime() || 0))
+    .forEach((request) => {
+      if (!isRequestEarlyStage(request)) {
+        cleaned.push(request);
+        return;
+      }
+
+      const signature = getRequestDuplicateSignature(request);
+      const kept = keepBySignature.get(signature);
+      if (kept && areRequestsCreatedClose(kept, request, 10)) {
+        duplicateIds.push(request.id);
+        return;
+      }
+
+      keepBySignature.set(signature, request);
+      cleaned.push(request);
+    });
+
+  if (duplicateIds.length === 0) return false;
+
+  const orderByOriginalList = new Map(requests.map((request, index) => [request.id, index]));
+  requests = cleaned.sort((a, b) => (orderByOriginalList.get(a.id) || 0) - (orderByOriginalList.get(b.id) || 0));
+  if (supabaseClient) {
+    await Promise.all(duplicateIds.map((id) => deleteSupabaseRow("manupecas_requests", "id", id)));
+  }
+  return true;
 }
 
 function getRequestProgressScore(request) {
@@ -2380,6 +2595,7 @@ function createCard(request) {
         ].filter(Boolean).join(" | ")
         : "";
       return `<div>
+        ${isReceiptFlow ? `<label class="receipt-item-check"><input class="receipt-item-toggle" type="checkbox" data-index="${request.items.indexOf(item)}" /> Receber este item</label>` : ""}
         <strong>${item.code}</strong>
         <span>${item.description}</span>
         <em>${isReceiptFlow ? `${cdReceiptQty + purchaseReceiptQty} un. para entrada e recebimento` : `${getPurchasePendingQty(item)} un. para compra`}</em>
@@ -2601,9 +2817,8 @@ async function approveCancellation(id) {
     cancellationRejectedBy: "",
     response: `Solicitação cancelada por aprovação do Admin ${userName}.`,
   } : item);
-  await saveRequests();
-  await flushSupabaseWrites();
   render();
+  await saveRequests();
 }
 
 async function rejectCancellation(id) {
@@ -2629,21 +2844,29 @@ async function rejectCancellation(id) {
     cancellationRejectedBy: userName,
     response: `Cancelamento recusado pelo Admin ${userName}. Solicitação mantida em aberto.`,
   } : item);
-  await saveRequests();
-  await flushSupabaseWrites();
   render();
+  await saveRequests();
 }
 
 function resolveCancellationRestoredStatus(request) {
+  if (!request) return "solicitacao";
+  const items = request.items || [];
+
+  if (items.some(isPendingRegistrationItem)) return "cadastro";
+  if (items.some((item) => getCdPendingQty(item) > 0)) return "cd";
+  if (getReceiptPendingItems(request).length > 0) return "recebimento";
+  if (items.some((item) => getPurchasePendingQty(item) > 0)) return "compra";
+  if (hasPickupPending(request)) return "atendimento";
+
   const candidates = [
     request?.cancellationPreviousDisplayStatus,
     request?.cancellationPreviousStatus,
   ];
   const restored = candidates
-    .map((status) => normalizeStatus(status, request?.items || []))
+    .map((status) => normalizeStatus(status, items))
     .find((status) => status && status !== "cancelamento" && status !== "cancelado");
   if (restored) return restored;
-  return calculateStatus(request?.items || []);
+  return calculateStatus(items);
 }
 
 function createFulfillmentLine(item, index) {
@@ -2936,9 +3159,17 @@ async function confirmReceiptEntry(id, card) {
   const password = card.querySelector(".receipt-password").value;
   const message = card.querySelector(".receipt-message");
   const account = getAllAccounts()[currentUser.email];
+  const selectedReceiptIndexes = Array.from(card.querySelectorAll(".receipt-item-toggle:checked"))
+    .map((input) => Number(input.dataset.index))
+    .filter((index) => Number.isInteger(index));
 
   if (!receiptNumber) {
     message.textContent = "Informe o número de recebimento / entrada SAP.";
+    return;
+  }
+
+  if (selectedReceiptIndexes.length === 0) {
+    message.textContent = "Selecione pelo menos um item para receber.";
     return;
   }
 
@@ -2957,8 +3188,10 @@ async function confirmReceiptEntry(id, card) {
   const receiptInvoiceDataUrl = selectedReceiptInvoice ? await readFileAsDataUrl(selectedReceiptInvoice) : request.receiptInvoiceDataUrl || "";
   const now = new Date().toISOString();
   const hadPurchaseArrival = isPurchaseArrivalRegistered(request);
+  const selectedReceiptIndexSet = new Set(selectedReceiptIndexes);
   const items = request.items.map((item) => {
-    if (!isReceiptItemPending(request, item)) return item;
+    const index = request.items.indexOf(item);
+    if (!selectedReceiptIndexSet.has(index) || !isReceiptItemPending(request, item)) return item;
     const purchasedQty = isPurchaseArrivalRegistered(request) && item.purchaseApproval === "approved" ? getPurchasePendingQty(item) : 0;
     const cdQty = Number(item.cdQty) || 0;
     return {
@@ -2968,14 +3201,20 @@ async function confirmReceiptEntry(id, card) {
       purchaseReceivedQty: (Number(item.purchaseReceivedQty) || 0) + purchasedQty,
       cdQty: 0,
       purchaseQty: purchasedQty > 0 ? 0 : Number(item.purchaseQty) || getPurchasePendingQty(item),
+      receiptNumber,
+      receiptAt: now,
+      receiptBy: currentUser.name || currentUser.label,
+      receiptInvoiceName: purchasedQty > 0 ? receiptInvoiceName : item.receiptInvoiceName || "",
+      receiptInvoiceDataUrl: purchasedQty > 0 ? receiptInvoiceDataUrl : item.receiptInvoiceDataUrl || "",
       status: "atendimento",
       statusItem: "atendimento",
     };
   });
   const hasApprovedPurchaseAfterReceipt = items.some((item) => getPurchasePendingQty(item) > 0 && item.purchaseApproval === "approved");
+  const hasPickupAfterReceipt = items.some(isPickupItemPending);
   const updatedRequest = {
     ...request,
-    status: hasApprovedPurchaseAfterReceipt ? "compra" : "atendimento",
+    status: hasPickupAfterReceipt ? "atendimento" : hasApprovedPurchaseAfterReceipt ? "compra" : "atendimento",
     items: hasApprovedPurchaseAfterReceipt
       ? items.map((item) => (getPurchaseBaseQty(item) > 0 ? { ...item, purchaseApproval: "approved" } : item))
       : items,
@@ -3134,11 +3373,11 @@ function getPurchasePendingQtySum(request) {
 
 function getDisplayItemsForCurrentView(request) {
   if (!request?.items) return [];
-  if (currentFilter === "cd" || currentUser?.role === "cd") {
-    return request.items.filter((item) => getCdPendingQty(item) > 0);
-  }
   if (currentFilter === "recebimento") {
     return getReceiptPendingItems(request);
+  }
+  if (currentFilter === "cd" || (currentUser?.role === "cd" && currentFilter !== "recebimento")) {
+    return request.items.filter((item) => getCdPendingQty(item) > 0);
   }
   if (currentFilter === "atendimento" && (currentUser?.role === "pcm" || currentUser?.role === "almox")) {
     const pickupItems = request.items.filter(isPickupItemPending);
@@ -3276,9 +3515,9 @@ function getItemStageStatus(request, item) {
   if (getWithdrawnQty(item) >= (Number(item.quantity) || 0)) return "Retirado";
   if (getDisplayStatus(request) === "recebimento" && (Number(item.cdQty) || 0) > 0) return "Pendente entrada e recebimento";
   if (isPurchaseArrivalRegistered(request) && item.purchaseApproval === "approved" && getPurchasePendingQty(item) > 0) return "Pendente entrada e recebimento";
-  if (getPickupReleasedQty(item) > 0) return "Liberado para retirada";
   if (request.status === "cd" && getCdPendingQty(item) > 0) return "Pendente CD";
   if (getPurchaseBaseQty(item) > 0) return getItemPurchaseStatus(request, item);
+  if (getPickupReleasedQty(item) > 0) return "Liberado para retirada";
   if (request.status === "solicitacao") return "Pendente Almox";
   return statusText[request.status] || "-";
 }
@@ -4204,7 +4443,7 @@ function createHistoryItemDetails(request) {
       <b>${getAlmoxServedQty(item)}</b>
       <b>${getCdServedQty(item)}</b>
       <b>${getPurchaseServedQty(item)}</b>
-      <small>${getItemStageStatus(request, item)}</small>
+      <small>${getHistoryItemStageStatus(request, item)}</small>
       <em>${getItemInvoiceMarkup(request, item, "transfer")}</em>
       <em>${getItemReceiptMarkup(request, item)}</em>
     </div>`)
@@ -4226,6 +4465,28 @@ function createHistoryItemDetails(request) {
   `;
 }
 
+function getHistoryItemStageStatus(request, item) {
+  if (request.status === "cancelado" || item.status === "cancelado" || item.statusItem === "cancelado") return "Cancelado";
+  if (isPendingRegistrationItem(item)) return "Aguardando cadastro SAP";
+  if (getWithdrawnQty(item) >= (Number(item.quantity) || 0)) return "Retirado";
+
+  const localQty = Number(item.availableQty) || 0;
+  const cdQty = Number(item.cdQty) || 0;
+  const cdReceivedQty = Number(item.cdReceivedQty) || 0;
+  const purchaseReceivedQty = Number(item.purchaseReceivedQty) || 0;
+  const hasItemReceipt = Boolean(item.receiptNumber || item.receiptAt || item.receiptBy);
+
+  if (hasItemReceipt && (cdReceivedQty > 0 || purchaseReceivedQty > 0) && getPickupReleasedQty(item) > getWithdrawnQty(item)) {
+    return "Liberado para retirada";
+  }
+  if (cdQty > 0 || (!hasItemReceipt && cdReceivedQty > 0)) return "Pendente entrada e recebimento";
+  if (getPurchasePendingQty(item) > 0) return getItemPurchaseStatus(request, item);
+  if (purchaseReceivedQty > 0 && !hasItemReceipt) return "Pendente validação do recebimento";
+  if (localQty > getWithdrawnQty(item)) return "Liberado para retirada";
+  if (request.status === "solicitacao") return "Pendente Almox";
+  return getItemStageStatus(request, item);
+}
+
 function getItemInvoiceName(request, item, type) {
   if (type === "transfer" && getCdServedQty(item) > 0) return request.transferInvoiceName || "-";
   return "-";
@@ -4240,18 +4501,21 @@ function getItemInvoiceMarkup(request, item, type) {
 }
 
 function getItemReceiptMarkup(request, item) {
-  if (!request.receiptNumber) return "-";
+  const receiptNumber = item.receiptNumber || "";
+  if (!receiptNumber) return "-";
   const hasPurchaseReceiptItem = (Number(item.purchaseReceivedQty) || 0) > 0;
   const hasCdReceiptItem = (Number(item.cdReceivedQty) || 0) > 0;
   if (hasPurchaseReceiptItem) {
-    const invoice = request.receiptInvoiceName
-      ? request.receiptInvoiceDataUrl
-        ? `<a class="invoice-link" href="${escapeAttr(request.receiptInvoiceDataUrl)}" download="${escapeAttr(request.receiptInvoiceName)}" target="_blank" rel="noopener">${escapeHtml(request.receiptInvoiceName)}</a>`
-        : escapeHtml(request.receiptInvoiceName)
+    const invoiceName = item.receiptInvoiceName || request.receiptInvoiceName || "";
+    const invoiceUrl = item.receiptInvoiceDataUrl || request.receiptInvoiceDataUrl || "";
+    const invoice = invoiceName
+      ? invoiceUrl
+        ? `<a class="invoice-link" href="${escapeAttr(invoiceUrl)}" download="${escapeAttr(invoiceName)}" target="_blank" rel="noopener">${escapeHtml(invoiceName)}</a>`
+        : escapeHtml(invoiceName)
       : "";
-    return invoice ? `${escapeHtml(request.receiptNumber)}<br>${invoice}` : escapeHtml(request.receiptNumber);
+    return invoice ? `${escapeHtml(receiptNumber)}<br>${invoice}` : escapeHtml(receiptNumber);
   }
-  if (hasCdReceiptItem) return escapeHtml(request.receiptNumber);
+  if (hasCdReceiptItem) return escapeHtml(receiptNumber);
   return "-";
 }
 
@@ -4696,8 +4960,17 @@ function isPopupUsable(popup) {
 function openMailDraft(to, subject, bodyText) {
   const recipients = typeof to === "object" && to !== null ? to : { to };
   flushSupabaseWrites();
+  refreshEmailSettingsCache();
   preparedMailPopup = null;
   openMailDraftInOutlookWeb(recipients, subject, bodyText);
+}
+
+function refreshEmailSettingsCache() {
+  try {
+    emailSettings = normalizeEmailSettings(JSON.parse(localStorage.getItem(EMAIL_SETTINGS_KEY) || "{}"));
+  } catch {
+    emailSettings = normalizeEmailSettings(emailSettings);
+  }
 }
 
 function openMailDraftInOutlookWeb(recipients, subject, bodyText) {
@@ -4705,18 +4978,14 @@ function openMailDraftInOutlookWeb(recipients, subject, bodyText) {
   if (recipients.step) {
     finalRecipients = getEmailRecipients(recipients.step, recipients.fallback || "");
   }
+  const params = new URLSearchParams();
   const recipient = formatOutlookWebRecipients(finalRecipients.to);
   const cc = formatOutlookWebRecipients(finalRecipients.cc);
-  const mailParams = [
-    cc ? ["cc", cc] : null,
-    ["subject", cleanEmailText(subject || "")],
-    ["body", cleanEmailText(bodyText || "")],
-  ]
-    .filter(Boolean)
-    .map(([key, value]) => `${key}=${encodeURIComponent(value)}`)
-    .join("&");
-  const mailtoUri = `mailto:${encodeURIComponent(recipient)}${mailParams ? `?${mailParams}` : ""}`;
-  const outlookUrl = `https://outlook.office.com/mail/deeplink/compose?mailtouri=${encodeURIComponent(mailtoUri)}`;
+  if (recipient) params.set("to", recipient);
+  if (cc) params.set("cc", cc);
+  params.set("subject", cleanEmailText(subject || ""));
+  params.set("body", cleanEmailText(bodyText || ""));
+  const outlookUrl = `https://outlook.office.com/mail/0/deeplink/compose?${params.toString()}`;
   const opened = window.open(outlookUrl, "_blank", "noopener,noreferrer");
   if (!opened) {
     window.alert("O navegador bloqueou a abertura do Outlook Web. Libere pop-ups para o ManuPeças e tente novamente.");
@@ -4772,14 +5041,13 @@ function openEmailDraft(request, to) {
     { title: "Motivo", content: request.reason },
   ]);
 
-  openMailDraft(getEmailRecipients("request", to || userLoginToEmail("jessica.lopes")), subject, bodyText);
+  openMailDraft({ step: "request", fallback: to || userLoginToEmail("jessica.lopes") }, subject, bodyText);
 }
 
 function openPartRegistrationEmailDraft(request) {
   const pendingItems = request.items.filter(isPendingRegistrationItem);
   if (pendingItems.length === 0) return;
 
-  const recipients = getEmailRecipients("registration", `${userLoginToEmail("erik.barreto")}; ${userLoginToEmail("bruno.medici")}`);
   const subject = buildEmailSubject(request, "Cadastro de item");
   const targetLabel = getRequestTargetLabel(request);
   const bodyText = buildEmailBody("Solicitação de Cadastro de Item", `Existem itens sem cadastro SAP na solicitação ${request.id}. Cadastre no SAP e informe código e descrição final na aba Cadastro de Item para liberar o Almoxarifado.`, [
@@ -4795,11 +5063,10 @@ function openPartRegistrationEmailDraft(request) {
     { title: "Motivo", content: request.reason },
   ]);
 
-  openMailDraft(recipients, subject, bodyText);
+  openMailDraft({ step: "registration", fallback: `${userLoginToEmail("erik.barreto")}; ${userLoginToEmail("bruno.medici")}` }, subject, bodyText);
 }
 
 function openPartRegistrationCompletedEmailDraft(request, part, useExisting = false) {
-  const recipients = getEmailRecipients("registration", `${userLoginToEmail("jessica.lopes")}; ${userLoginToEmail("erik.barreto")}; ${userLoginToEmail("bruno.medici")}`);
   const subject = buildEmailSubject(request, "Cadastro SAP concluído");
   const bodyText = buildEmailBody("Cadastro SAP Concluído", `O cadastro de item da solicitação ${request.id} foi concluído e a solicitação está liberada para atendimento do Almoxarifado.`, [
     { title: "Dados da Solicitação", content: `Solicitação: ${request.id}\nSolicitante: ${request.requestedBy || "-"}\nManutentor: ${request.maintainer || "-"}\nAplicação: ${getRequestTargetLabel(request)}\nPrioridade: ${request.priority}` },
@@ -4809,7 +5076,7 @@ function openPartRegistrationCompletedEmailDraft(request, part, useExisting = fa
     { title: "Próxima etapa", content: "Atendimento do Almoxarifado." },
   ]);
 
-  openMailDraft(recipients, subject, bodyText);
+  openMailDraft({ step: "registration", fallback: `${userLoginToEmail("jessica.lopes")}; ${userLoginToEmail("erik.barreto")}; ${userLoginToEmail("bruno.medici")}` }, subject, bodyText);
 }
 
 function openAlmoxEmailDraft(request, to) {
@@ -4828,7 +5095,7 @@ function openAlmoxEmailDraft(request, to) {
     { title: "Observação", content: request.response || "Sem observação." },
   ]);
 
-  openMailDraft(getEmailRecipients("almox", to || userLoginToEmail(request.requestedByEmail || request.requestedBy)), subject, bodyText);
+  openMailDraft({ step: "almox", fallback: to || userLoginToEmail(request.requestedByEmail || request.requestedBy) }, subject, bodyText);
 }
 
 function openCdEmailDraft(request, to) {
@@ -4844,7 +5111,7 @@ function openCdEmailDraft(request, to) {
     { title: "Anexo", content: request.transferInvoiceName ? `Anexar a NF selecionada: ${request.transferInvoiceName}` : "Anexar a NF de transferência antes do envio final." },
   ]);
 
-  openMailDraft(getEmailRecipients("cd", to || userLoginToEmail(request.almoxByEmail || request.almoxBy || "jessica.lopes")), subject, bodyText);
+  openMailDraft({ step: "cd", fallback: to || userLoginToEmail(request.almoxByEmail || request.almoxBy || "jessica.lopes") }, subject, bodyText);
 }
 
 function openApprovalEmailDraft(request, to) {
@@ -4858,7 +5125,7 @@ function openApprovalEmailDraft(request, to) {
     { title: "Observação", content: request.response || "Sem observação." },
   ]);
 
-  openMailDraft(getEmailRecipients("approval", to || `${userLoginToEmail("jessica.lopes")}; ${userLoginToEmail("marcio.ferreira")}`), subject, bodyText);
+  openMailDraft({ step: "approval", fallback: to || `${userLoginToEmail("jessica.lopes")}; ${userLoginToEmail("marcio.ferreira")}` }, subject, bodyText);
 }
 
 function openPurchaseEmailDraft(request, to) {
@@ -4873,7 +5140,7 @@ function openPurchaseEmailDraft(request, to) {
     ]) : "Nenhum item pendente de compra." },
   ]);
 
-  openMailDraft(getEmailRecipients("purchase", to || `${userLoginToEmail("jessica.lopes")}; ${userLoginToEmail(request.requestedByEmail || request.requestedBy)}`), subject, bodyText);
+  openMailDraft({ step: "purchase", fallback: to || `${userLoginToEmail("jessica.lopes")}; ${userLoginToEmail(request.requestedByEmail || request.requestedBy)}` }, subject, bodyText);
 }
 
 function openPurchaseArrivalEmailDraft(request, to) {
@@ -4887,7 +5154,7 @@ function openPurchaseArrivalEmailDraft(request, to) {
     ]) : "Nenhum item comprado pendente de recebimento." },
   ]);
 
-  openMailDraft(getEmailRecipients("receipt", to || `${userLoginToEmail(request.requestedByEmail || request.requestedBy)}; ${userLoginToEmail("rodrigo.araujo")}`), subject, bodyText);
+  openMailDraft({ step: "receipt", fallback: to || `${userLoginToEmail(request.requestedByEmail || request.requestedBy)}; ${userLoginToEmail("rodrigo.araujo")}` }, subject, bodyText);
 }
 
 function openReceiptEmailDraft(request, to) {
@@ -4903,7 +5170,7 @@ function openReceiptEmailDraft(request, to) {
     ]) : "Nenhum item disponível para retirada." },
   ]);
 
-  openMailDraft(getEmailRecipients("pickup", to || userLoginToEmail(request.requestedByEmail || request.requestedBy)), subject, bodyText);
+  openMailDraft({ step: "pickup", fallback: to || userLoginToEmail(request.requestedByEmail || request.requestedBy) }, subject, bodyText);
 }
 
 function openCancellationRequestEmailDraft(request, to) {
@@ -4921,7 +5188,7 @@ function openCancellationRequestEmailDraft(request, to) {
     userLoginToEmail("caio.silveira"),
     requestedByEmail,
   ].filter(Boolean).join("; ");
-  openMailDraft(getEmailRecipients("cancellation", to || fallback), subject, bodyText);
+  openMailDraft({ step: "cancellation", fallback: to || fallback }, subject, bodyText);
 }
 
 function createProcessMap(request) {

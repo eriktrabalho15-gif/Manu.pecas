@@ -2101,6 +2101,25 @@ dd {
   color: var(--amber);
 }
 
+.receipt-item-check {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  width: fit-content;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  padding: 5px 9px;
+  background: var(--surface);
+  color: var(--text);
+  font-size: 0.78rem;
+  font-weight: 850;
+}
+
+.receipt-item-check input {
+  width: auto;
+  accent-color: var(--green);
+}
+
 .purchase-items em {
   color: var(--muted);
   font-style: normal;
