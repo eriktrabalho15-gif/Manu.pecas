@@ -61,7 +61,7 @@ const statusText = {
   retirado: "Item retirado pelo PCM",
 };
 
-const emailStepKeys = ["request", "registration", "almox", "cd", "approval", "purchase", "receipt", "pickup"];
+const emailStepKeys = ["request", "registration", "almox", "cd", "approval", "purchase", "receipt", "pickup", "cancellation"];
 const emailStepLabels = {
   request: "Solicitação",
   registration: "Cadastro de item",
@@ -71,6 +71,7 @@ const emailStepLabels = {
   purchase: "Compra",
   receipt: "Recebimento",
   pickup: "Retirada",
+  cancellation: "Cancelamento",
 };
 const defaultEmailSettings = {
   request: { toUsers: ["jessica.lopes"], ccUsers: [], extraTo: "", extraCc: "" },
@@ -81,6 +82,7 @@ const defaultEmailSettings = {
   purchase: { toUsers: ["jessica.lopes", "matheus.campos"], ccUsers: ["rodrigo.araujo"], extraTo: "", extraCc: "" },
   receipt: { toUsers: ["matheus.campos"], ccUsers: ["rodrigo.araujo"], extraTo: "", extraCc: "" },
   pickup: { toUsers: ["matheus.campos"], ccUsers: [], extraTo: "", extraCc: "" },
+  cancellation: { toUsers: ["erik.barreto", "bruno.medici", "caio.silveira"], ccUsers: [], extraTo: "", extraCc: "" },
 };
 
 const fixedUserCorporateEmails = {
@@ -104,6 +106,7 @@ let currentPage = "request";
 let activePartRegistrationInput = null;
 let userAccessFeedback = null;
 let pendingSupabaseWrites = [];
+let preparedMailPopup = null;
 
 const body = document.body;
 const loginForm = document.querySelector("#login-form");
@@ -257,6 +260,7 @@ form.addEventListener("submit", async (event) => {
     return;
   }
 
+  prepareMailPopup();
   await syncFromSupabase();
 
   const request = {
@@ -486,6 +490,15 @@ async function startApp() {
   currentFilter = currentUser.role === "cd" ? "cd" : "solicitacao";
   resetItemLines();
   await syncFromSupabase();
+  if (repairBp0030VoltageRegulatorCdFulfillment()) {
+    await saveRequests();
+  }
+  if (repairReceivedItemsStuckInReceipt()) {
+    await saveRequests();
+  }
+  if (repairInvalidSapTestRequests()) {
+    await saveRequests();
+  }
   if (migratePurchaseApprovalBacklog()) {
     await saveRequests();
   }
@@ -703,6 +716,7 @@ function loadRequests() {
 function normalizeRequest(request) {
   const cancellationWasApproved = Boolean(request?.cancellationApprovedAt) || request?.status === "cancelado";
   const normalizedStatus = cancellationWasApproved ? "cancelado" : hasPendingCancellation(request) ? "cancelamento" : normalizeStatus(request.status, request.items || []);
+  const sapRequestNumber = normalizeSapRequestNumber(request.sapRequestNumber);
   if (request.items) {
     const rawItems = request.items.map((item) => normalizeItem(item, normalizedStatus));
     const normalizedItems = normalizedStatus === "cancelado"
@@ -714,9 +728,10 @@ function normalizeRequest(request) {
       targetType: request.targetType || (String(request.bus || "").toLowerCase() === "frota" ? "frota" : "prefixo"),
       status: finalStatus,
       purchaseOrder: request.purchaseOrder || "",
-      sapRequestNumber: request.sapRequestNumber || "",
-      sapRequestAt: request.sapRequestAt || "",
-      sapRequestBy: request.sapRequestBy || "",
+      response: normalizeSapRequestResponse(request.response, sapRequestNumber),
+      sapRequestNumber,
+      sapRequestAt: sapRequestNumber ? request.sapRequestAt || "" : "",
+      sapRequestBy: sapRequestNumber ? request.sapRequestBy || "" : "",
       buyerNote: request.buyerNote || "",
       deliveryDate: request.deliveryDate || "",
       purchaseUpdatedAt: request.purchaseUpdatedAt || "",
@@ -747,6 +762,7 @@ function normalizeRequest(request) {
       receiptInvoiceName: request.receiptInvoiceName || "",
       receiptInvoiceDataUrl: request.receiptInvoiceDataUrl || "",
       cancellationPreviousStatus: request.cancellationPreviousStatus || "",
+      cancellationPreviousDisplayStatus: request.cancellationPreviousDisplayStatus || "",
       cancellationRequestedAt: request.cancellationRequestedAt || "",
       cancellationRequestedBy: request.cancellationRequestedBy || "",
       cancellationRequestedByEmail: request.cancellationRequestedByEmail || "",
@@ -769,9 +785,10 @@ function normalizeRequest(request) {
     targetType: request.targetType || (String(request.bus || "").toLowerCase() === "frota" ? "frota" : "prefixo"),
     status: finalStatus,
     purchaseOrder: request.purchaseOrder || "",
-    sapRequestNumber: request.sapRequestNumber || "",
-    sapRequestAt: request.sapRequestAt || "",
-    sapRequestBy: request.sapRequestBy || "",
+    response: normalizeSapRequestResponse(request.response, sapRequestNumber),
+    sapRequestNumber,
+    sapRequestAt: sapRequestNumber ? request.sapRequestAt || "" : "",
+    sapRequestBy: sapRequestNumber ? request.sapRequestBy || "" : "",
     buyerNote: request.buyerNote || "",
     deliveryDate: request.deliveryDate || "",
     purchaseUpdatedAt: request.purchaseUpdatedAt || "",
@@ -802,6 +819,7 @@ function normalizeRequest(request) {
     receiptInvoiceName: request.receiptInvoiceName || "",
     receiptInvoiceDataUrl: request.receiptInvoiceDataUrl || "",
     cancellationPreviousStatus: request.cancellationPreviousStatus || "",
+    cancellationPreviousDisplayStatus: request.cancellationPreviousDisplayStatus || "",
     cancellationRequestedAt: request.cancellationRequestedAt || "",
     cancellationRequestedBy: request.cancellationRequestedBy || "",
     cancellationRequestedByEmail: request.cancellationRequestedByEmail || "",
@@ -821,6 +839,17 @@ function normalizeStatus(status, items = []) {
   if (status === "estoque" || status === "atendida") return "atendimento";
   if (status === "compra" || status === "parcial") return "compra";
   return calculateStatus(items);
+}
+
+function normalizeSapRequestNumber(value) {
+  const text = String(value || "").trim();
+  return text.toLowerCase() === "teste" ? "" : text;
+}
+
+function normalizeSapRequestResponse(response, sapRequestNumber) {
+  const text = String(response || "");
+  const hasInvalidSapTest = !sapRequestNumber && /solicita[cç][aã]o sap registrada[\s\S]*\bteste\b/i.test(text);
+  return hasInvalidSapTest ? "Pendente solicitação SAP pelo Almoxarifado." : text;
 }
 
 function normalizeItem(item, requestStatus = "solicitacao") {
@@ -885,6 +914,113 @@ function migratePurchaseApprovalBacklog() {
       items: request.items.map((item) => Number(item.purchaseQty) > 0 && item.purchaseApproval !== "rejected" ? { ...item, purchaseApproval: "approved" } : item),
     };
   });
+  return changed;
+}
+
+function repairBp0030VoltageRegulatorCdFulfillment() {
+  let changed = false;
+  const now = new Date().toISOString();
+
+  requests = requests.map((request) => {
+    if (request.id !== "BP - 0030") return request;
+
+    let repairedItem = false;
+    const items = request.items.map((item) => {
+      const isVoltageRegulator = String(item.code || "").trim() === "30007756"
+        || String(item.description || "").toLowerCase().includes("regulador de voltagem");
+      if (!isVoltageRegulator) return item;
+
+      const requestedQty = Number(item.quantity) || 1;
+      const alreadyFixed = Number(item.cdQty) >= requestedQty && Number(item.purchaseQty || 0) === 0;
+      if (alreadyFixed) return item;
+
+      repairedItem = true;
+      return {
+        ...item,
+        cdQty: requestedQty,
+        cdPendingQty: 0,
+        purchaseQty: 0,
+        purchaseApproval: "",
+      };
+    });
+
+    if (!repairedItem) return request;
+
+    changed = true;
+    const hasPurchasePending = items.some((item) => getPurchasePendingQty(item) > 0);
+    return {
+      ...request,
+      items,
+      status: "recebimento",
+      cdAt: request.cdAt || now,
+      cdBy: request.cdBy || "CD",
+      purchaseAt: hasPurchasePending ? request.purchaseAt || now : request.purchaseAt || "",
+      response: "Regulador de voltagem atendido pelo CD. Item removido de compras; demais itens permanecem conforme fluxo.",
+    };
+  });
+
+  return changed;
+}
+
+function repairReceivedItemsStuckInReceipt() {
+  let changed = false;
+
+  requests = requests.map((request) => {
+    if (!request.receiptAt && !request.receiptNumber) return request;
+
+    let repairedItem = false;
+    const items = request.items.map((item) => {
+      const cdQty = Number(item.cdQty) || 0;
+      const purchaseQty = isPurchaseArrivalRegistered(request) ? Number(item.purchaseQty) || 0 : 0;
+      if (cdQty <= 0 && purchaseQty <= 0) return item;
+
+      repairedItem = true;
+      return {
+        ...item,
+        availableQty: (Number(item.availableQty) || 0) + cdQty + purchaseQty,
+        cdReceivedQty: (Number(item.cdReceivedQty) || 0) + cdQty,
+        purchaseReceivedQty: (Number(item.purchaseReceivedQty) || 0) + purchaseQty,
+        cdQty: 0,
+        purchaseQty: 0,
+        status: "atendimento",
+        statusItem: "atendimento",
+      };
+    });
+
+    if (!repairedItem) return request;
+    changed = true;
+    const hasPurchasePendingAfterRepair = items.some((item) => getPurchasePendingQty(item) > 0 && item.purchaseApproval === "approved");
+    return {
+      ...request,
+      items,
+      status: hasPurchasePendingAfterRepair ? "compra" : "atendimento",
+      pickupAt: request.pickupAt || request.receiptAt || new Date().toISOString(),
+      response: request.response || "Recebimento confirmado. Item liberado para retirada do PCM.",
+    };
+  });
+
+  return changed;
+}
+
+function repairInvalidSapTestRequests() {
+  let changed = false;
+
+  requests = requests.map((request) => {
+    const sapRequestNumber = normalizeSapRequestNumber(request.sapRequestNumber);
+    const response = normalizeSapRequestResponse(request.response, sapRequestNumber);
+    const shouldCleanSapFields = !sapRequestNumber && String(request.sapRequestNumber || "").trim().toLowerCase() === "teste";
+    if (!shouldCleanSapFields && response === (request.response || "")) return request;
+
+    changed = true;
+    return {
+      ...request,
+      sapRequestNumber,
+      sapRequestAt: sapRequestNumber ? request.sapRequestAt || "" : "",
+      sapRequestBy: sapRequestNumber ? request.sapRequestBy || "" : "",
+      response,
+    };
+  });
+
   return changed;
 }
 
@@ -1985,10 +2121,13 @@ function render() {
 
   const visible = requests.filter((request) => {
     const isCancellation = getDisplayStatus(request) === "cancelamento";
-    const isCanceled = request.status === "cancelado";
+    const isCanceled = request.status === "cancelado" || Boolean(request.cancellationApprovedAt);
     const requestedByCurrentUser = normalizeLogin(request.cancellationRequestedByEmail || request.requestedByEmail || request.requestedBy) === currentUser.email;
     if (isCanceled) return false;
-    if (isCancellation) return (currentUser.role === "admin" && currentFilter === "solicitacao") || requestedByCurrentUser || (currentUser.role === "almox" && request.cancellationRequestedByEmail === currentUser.email);
+    if (isCancellation) {
+      if (currentFilter !== "solicitacao") return false;
+      return currentUser.role === "admin" || requestedByCurrentUser || (currentUser.role === "almox" && request.cancellationRequestedByEmail === currentUser.email);
+    }
     if (currentUser.role === "pcm") {
       if (currentFilter === "atendimento") return hasPickupPending(request);
       if (currentFilter === "compra") return request.status === "aprovacao" || request.status === "compra" || request.status === "recebimento" || request.status === "reprovado";
@@ -2379,8 +2518,16 @@ function renderCancellationPanel(request, panel) {
       </div>`;
     const approveButton = panel.querySelector(".approve-cancel");
     const rejectButton = panel.querySelector(".reject-cancel");
-    if (approveButton) approveButton.addEventListener("click", () => approveCancellation(request.id));
-    if (rejectButton) rejectButton.addEventListener("click", () => rejectCancellation(request.id));
+    if (approveButton) approveButton.addEventListener("click", (event) => {
+      event.preventDefault();
+      event.stopPropagation();
+      approveCancellation(request.id);
+    });
+    if (rejectButton) rejectButton.addEventListener("click", (event) => {
+      event.preventDefault();
+      event.stopPropagation();
+      rejectCancellation(request.id);
+    });
     return;
   }
 
@@ -2401,12 +2548,15 @@ async function requestCancellation(id) {
   if (!canRequestCancellation(request)) return;
   const reason = window.prompt("Informe o motivo do cancelamento:");
   if (reason === null) return;
+  prepareMailPopup();
   const now = new Date().toISOString();
   const userName = currentUser.name || currentUser.label || currentUser.email;
+  let updatedRequest = null;
   requests = requests.map((item) => item.id === id ? {
     ...item,
     status: "cancelamento",
     cancellationPreviousStatus: item.status,
+    cancellationPreviousDisplayStatus: getDisplayStatus(item),
     cancellationRequestedAt: now,
     cancellationRequestedBy: userName,
     cancellationRequestedByEmail: currentUser.email,
@@ -2419,14 +2569,25 @@ async function requestCancellation(id) {
     response: reason.trim()
       ? `Cancelamento solicitado por ${userName}. Motivo: ${reason.trim()}`
       : `Cancelamento solicitado por ${userName}.`,
-  } : item);
+  } : item).map((item) => {
+    if (item.id === id) updatedRequest = item;
+    return item;
+  });
   await saveRequests();
+  if (updatedRequest) openCancellationRequestEmailDraft(updatedRequest, "");
   render();
 }
 
 async function approveCancellation(id) {
   const request = requests.find((item) => item.id === id);
-  if (!canReviewCancellation(request)) return;
+  if (!request || !hasPendingCancellation(request)) {
+    window.alert("Não há cancelamento pendente para aprovar nesta solicitação.");
+    return;
+  }
+  if (currentUser?.role !== "admin") {
+    window.alert("Apenas usuários Admin podem aprovar cancelamento.");
+    return;
+  }
   const now = new Date().toISOString();
   const userName = currentUser.name || currentUser.label || currentUser.email;
   requests = requests.map((item) => item.id === id ? {
@@ -2441,24 +2602,48 @@ async function approveCancellation(id) {
     response: `Solicitação cancelada por aprovação do Admin ${userName}.`,
   } : item);
   await saveRequests();
+  await flushSupabaseWrites();
   render();
 }
 
 async function rejectCancellation(id) {
   const request = requests.find((item) => item.id === id);
-  if (!canReviewCancellation(request)) return;
-  const restoredStatus = normalizeStatus(request.cancellationPreviousStatus, request.items) || calculateStatus(request.items);
+  if (!request || !hasPendingCancellation(request)) {
+    window.alert("Não há cancelamento pendente para recusar nesta solicitação.");
+    return;
+  }
+  if (currentUser?.role !== "admin") {
+    window.alert("Apenas usuários Admin podem recusar cancelamento.");
+    return;
+  }
+  const restoredStatus = resolveCancellationRestoredStatus(request);
   const now = new Date().toISOString();
   const userName = currentUser.name || currentUser.label || currentUser.email;
   requests = requests.map((item) => item.id === id ? {
     ...item,
-    status: restoredStatus === "cancelamento" || restoredStatus === "cancelado" ? calculateStatus(item.items) : restoredStatus,
+    status: restoredStatus,
+    cancellationApprovedAt: "",
+    cancellationApprovedBy: "",
+    cancellationApprovedByEmail: "",
     cancellationRejectedAt: now,
     cancellationRejectedBy: userName,
     response: `Cancelamento recusado pelo Admin ${userName}. Solicitação mantida em aberto.`,
   } : item);
   await saveRequests();
+  await flushSupabaseWrites();
   render();
+}
+
+function resolveCancellationRestoredStatus(request) {
+  const candidates = [
+    request?.cancellationPreviousDisplayStatus,
+    request?.cancellationPreviousStatus,
+  ];
+  const restored = candidates
+    .map((status) => normalizeStatus(status, request?.items || []))
+    .find((status) => status && status !== "cancelamento" && status !== "cancelado");
+  if (restored) return restored;
+  return calculateStatus(request?.items || []);
 }
 
 function createFulfillmentLine(item, index) {
@@ -2542,6 +2727,7 @@ function createCdFulfillmentLine(item, index) {
 async function saveFulfillment(id, card, shouldEmail) {
   const request = requests.find((item) => item.id === id);
   if (!request) return;
+  prepareMailPopup();
 
   const rowsByIndex = new Map([...card.querySelectorAll(".fulfillment-row")].map((row) => [Number(row.dataset.index), row]));
   const updatedItems = request.items.map((item, index) => {
@@ -2584,6 +2770,7 @@ async function saveCdFulfillment(id, card, shouldEmail) {
   if (currentUser.role !== "cd") return;
   const request = requests.find((item) => item.id === id);
   if (!request) return;
+  if (shouldEmail) prepareMailPopup();
 
   const rowsByIndex = new Map([...card.querySelectorAll(".fulfillment-row")].map((row) => [Number(row.dataset.index), row]));
   const updatedItems = request.items.map((item, index) => {
@@ -2659,6 +2846,7 @@ async function savePurchaseOrder(id, card, shouldEmail) {
     card.querySelector(".purchase-order").focus();
     return;
   }
+  prepareMailPopup();
   const updatedRequest = {
     ...request,
     items: request.items.map((item) => (isPurchaseItemActive(request, item) ? { ...item, purchaseQty: getPurchasePendingQty(item), purchaseApproval: "approved" } : item)),
@@ -2688,11 +2876,15 @@ async function saveSapRequestNumber(id, card) {
   if (currentUser.role !== "almox") return;
   const request = requests.find((item) => item.id === id);
   if (!request) return;
-  const sapRequestNumber = card.querySelector(".sap-request-number").value.trim();
+  const sapRequestInput = card.querySelector(".sap-request-number");
+  const sapRequestNumber = normalizeSapRequestNumber(sapRequestInput.value);
   if (!sapRequestNumber) {
-    card.querySelector(".sap-request-number").focus();
+    sapRequestInput.value = "";
+    sapRequestInput.focus();
+    window.alert("Informe o número real da solicitação SAP.");
     return;
   }
+  prepareMailPopup();
   const now = new Date().toISOString();
   const updatedRequest = {
     ...request,
@@ -2703,6 +2895,7 @@ async function saveSapRequestNumber(id, card) {
   };
   requests = requests.map((item) => (item.id === id ? updatedRequest : item));
   await saveRequests();
+  openPurchaseEmailDraft(updatedRequest, "");
   render();
 }
 
@@ -2714,6 +2907,7 @@ async function registerPurchaseArrival(id, card) {
     window.alert("Aguardando Compras informar o pedido de compra.");
     return;
   }
+  prepareMailPopup();
   const arrivedDate = getTodayDateInputValue();
   const now = new Date().toISOString();
   const updatedRequest = {
@@ -2758,13 +2952,13 @@ async function confirmReceiptEntry(id, card) {
     return;
   }
 
+  prepareMailPopup();
   const receiptInvoiceName = selectedReceiptInvoice?.name || request.receiptInvoiceName || "";
   const receiptInvoiceDataUrl = selectedReceiptInvoice ? await readFileAsDataUrl(selectedReceiptInvoice) : request.receiptInvoiceDataUrl || "";
   const now = new Date().toISOString();
   const hadPurchaseArrival = isPurchaseArrivalRegistered(request);
-  const receiptCodes = new Set(getReceiptPendingItems(request).map((item) => item.code));
   const items = request.items.map((item) => {
-    if (!receiptCodes.has(item.code)) return item;
+    if (!isReceiptItemPending(request, item)) return item;
     const purchasedQty = isPurchaseArrivalRegistered(request) && item.purchaseApproval === "approved" ? getPurchasePendingQty(item) : 0;
     const cdQty = Number(item.cdQty) || 0;
     return {
@@ -2774,9 +2968,10 @@ async function confirmReceiptEntry(id, card) {
       purchaseReceivedQty: (Number(item.purchaseReceivedQty) || 0) + purchasedQty,
       cdQty: 0,
       purchaseQty: purchasedQty > 0 ? 0 : Number(item.purchaseQty) || getPurchasePendingQty(item),
+      status: "atendimento",
+      statusItem: "atendimento",
     };
   });
-  const hasApprovalPendingAfterReceipt = false;
   const hasApprovedPurchaseAfterReceipt = items.some((item) => getPurchasePendingQty(item) > 0 && item.purchaseApproval === "approved");
   const updatedRequest = {
     ...request,
@@ -2790,6 +2985,7 @@ async function confirmReceiptEntry(id, card) {
     receiptInvoiceName,
     receiptInvoiceDataUrl,
     receiptAt: now,
+    pickupAt: request.pickupAt || now,
     receiptBy: currentUser.name || currentUser.label,
     receiptByEmail: currentUser.email,
     purchaseApprovalRequestedAt: "",
@@ -3107,7 +3303,6 @@ function isPickupItemPending(item) {
 }
 
 function hasPickupPending(request) {
-  if (!request.attendedAt) return false;
   return request.items.some(isPickupItemPending);
 }
 
@@ -3667,6 +3862,7 @@ async function completePartRegistration(id, code, finalDescription, useExisting 
     return;
   }
 
+  prepareMailPopup();
   const part = { code: cleanCode, description: cleanDescription };
   if (!useExisting || !existingPart) {
     customParts = customParts.filter((item) => String(item.code) !== cleanCode);
@@ -4200,6 +4396,7 @@ async function approvePurchase(id, mode = "all", selectedCodes = []) {
     window.alert("Selecione pelo menos um item para aplicar essa decisão.");
     return;
   }
+  prepareMailPopup();
   const now = new Date().toISOString();
   let approvedRequest = null;
   requests = requests.map((request) => {
@@ -4363,6 +4560,7 @@ async function savePurchaseDelivery(id, purchaseOrder, deliveryDate, buyerNote =
     };
     return updatedRequest;
   });
+  if (updatedRequest) prepareMailPopup();
   await saveRequests();
   if (updatedRequest) {
     openPurchaseEmailDraft(updatedRequest, "");
@@ -4462,6 +4660,7 @@ function userLoginToEmail(login) {
 
 function getEmailRecipients(step, fallback = "") {
   const setting = normalizeEmailStepSetting(emailSettings?.[step], null);
+  const hasStepConfig = Boolean(emailSettings && Object.prototype.hasOwnProperty.call(emailSettings, step));
   const to = [
     ...(setting.toUsers || []).map(userLoginToEmail),
     ...splitEmailLikeList(setting.extraTo || "").map(userLoginToEmail),
@@ -4473,33 +4672,42 @@ function getEmailRecipients(step, fallback = "") {
   const uniqueTo = to.filter((email, index, list) => list.indexOf(email) === index);
   const toSet = new Set(uniqueTo.map((email) => email.toLowerCase()));
   const uniqueCc = cc.filter((email, index, list) => email && !toSet.has(email.toLowerCase()) && list.indexOf(email) === index);
-  const hasConfiguredRecipient = uniqueTo.length > 0 || uniqueCc.length > 0;
   return {
     step,
     fallback,
-    to: uniqueTo.join(";") || (hasConfiguredRecipient ? "" : normalizeEmailList(fallback)),
+    to: uniqueTo.join(";") || (hasStepConfig ? "" : normalizeEmailList(fallback)),
     cc: uniqueCc.join(";"),
   };
+}
+
+function prepareMailPopup() {
+  preparedMailPopup = null;
+  return null;
+}
+
+function isPopupUsable(popup) {
+  try {
+    return Boolean(popup && !popup.closed);
+  } catch {
+    return Boolean(popup);
+  }
 }
 
 function openMailDraft(to, subject, bodyText) {
   const recipients = typeof to === "object" && to !== null ? to : { to };
   flushSupabaseWrites();
-  const popup = window.open("about:blank", "_blank");
-  if (popup) {
-    popup.document?.write?.("<p style=\"font-family:Arial,sans-serif;padding:24px\">Abrindo Outlook Web...</p>");
-  }
-  openMailDraftInOutlookWeb(recipients, subject, bodyText, popup);
+  preparedMailPopup = null;
+  openMailDraftInOutlookWeb(recipients, subject, bodyText);
 }
 
-function openMailDraftInOutlookWeb(recipients, subject, bodyText, popup) {
+function openMailDraftInOutlookWeb(recipients, subject, bodyText) {
   let finalRecipients = recipients;
   if (recipients.step) {
     finalRecipients = getEmailRecipients(recipients.step, recipients.fallback || "");
   }
   const recipient = formatOutlookWebRecipients(finalRecipients.to);
   const cc = formatOutlookWebRecipients(finalRecipients.cc);
-  const mailtoQuery = [
+  const mailParams = [
     cc ? ["cc", cc] : null,
     ["subject", cleanEmailText(subject || "")],
     ["body", cleanEmailText(bodyText || "")],
@@ -4507,10 +4715,12 @@ function openMailDraftInOutlookWeb(recipients, subject, bodyText, popup) {
     .filter(Boolean)
     .map(([key, value]) => `${key}=${encodeURIComponent(value)}`)
     .join("&");
-  const mailtoUrl = `mailto:${recipient}?${mailtoQuery}`;
-  const outlookUrl = `https://outlook.office.com/mail/deeplink/compose?mailtouri=${encodeURIComponent(mailtoUrl)}`;
-  if (popup) popup.location.href = outlookUrl;
-  else window.open(outlookUrl, "_blank");
+  const mailtoUri = `mailto:${encodeURIComponent(recipient)}${mailParams ? `?${mailParams}` : ""}`;
+  const outlookUrl = `https://outlook.office.com/mail/deeplink/compose?mailtouri=${encodeURIComponent(mailtoUri)}`;
+  const opened = window.open(outlookUrl, "_blank", "noopener,noreferrer");
+  if (!opened) {
+    window.alert("O navegador bloqueou a abertura do Outlook Web. Libere pop-ups para o ManuPeças e tente novamente.");
+  }
 }
 
 function cleanEmailText(value) {
@@ -4585,7 +4795,7 @@ function openPartRegistrationEmailDraft(request) {
     { title: "Motivo", content: request.reason },
   ]);
 
-  setTimeout(() => openMailDraft(recipients, subject, bodyText), 250);
+  openMailDraft(recipients, subject, bodyText);
 }
 
 function openPartRegistrationCompletedEmailDraft(request, part, useExisting = false) {
@@ -4599,7 +4809,7 @@ function openPartRegistrationCompletedEmailDraft(request, part, useExisting = fa
     { title: "Próxima etapa", content: "Atendimento do Almoxarifado." },
   ]);
 
-  setTimeout(() => openMailDraft(recipients, subject, bodyText), 250);
+  openMailDraft(recipients, subject, bodyText);
 }
 
 function openAlmoxEmailDraft(request, to) {
@@ -4694,6 +4904,24 @@ function openReceiptEmailDraft(request, to) {
   ]);
 
   openMailDraft(getEmailRecipients("pickup", to || userLoginToEmail(request.requestedByEmail || request.requestedBy)), subject, bodyText);
+}
+
+function openCancellationRequestEmailDraft(request, to) {
+  const subject = buildEmailSubject(request, "Cancelamento");
+  const requestedByEmail = userLoginToEmail(request.cancellationRequestedByEmail || request.requestedByEmail || request.requestedBy);
+  const bodyText = buildEmailBody("Solicitação de Cancelamento", `Foi solicitado o cancelamento da solicitação ${request.id}. Favor avaliar e aprovar ou recusar no ManuPeças.`, [
+    { title: "Dados da Solicitação", content: `Solicitação: ${request.id}\nAplicação: ${getRequestTargetLabel(request)}\nPrioridade: ${request.priority}\nSolicitante: ${request.requestedBy || "-"}\nManutentor: ${request.maintainer || "-"}\nStatus anterior: ${statusText[request.cancellationPreviousStatus] || request.cancellationPreviousStatus || "-"}` },
+    { title: "Cancelamento", content: `Solicitado por: ${request.cancellationRequestedBy || "-"}\nData: ${formatDateOrDash(request.cancellationRequestedAt)}\nMotivo: ${request.cancellationReason || "Sem motivo informado."}` },
+    { title: "Peças", content: formatEmailItems(request.items, (item) => item.quantity) },
+  ]);
+
+  const fallback = [
+    userLoginToEmail("erik.barreto"),
+    userLoginToEmail("bruno.medici"),
+    userLoginToEmail("caio.silveira"),
+    requestedByEmail,
+  ].filter(Boolean).join("; ");
+  openMailDraft(getEmailRecipients("cancellation", to || fallback), subject, bodyText);
 }
 
 function createProcessMap(request) {
