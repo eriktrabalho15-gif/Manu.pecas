@@ -1,4 +1,4 @@
-const REQUESTS_KEY = "pecas-transporte-solicitacoes-v4";
+﻿const REQUESTS_KEY = "pecas-transporte-solicitacoes-v4";
 const SESSION_KEY = "pecas-transporte-sessao";
 const THEME_KEY = "pecas-transporte-tema";
 const USERS_KEY = "pecas-transporte-usuarios";
@@ -51,11 +51,13 @@ const statusText = {
   solicitacao: "Pendente de atendimento do Almoxarifado",
   cd: "Pendente de atendimento do CD",
   atendimento: "Retirada liberada para o PCM",
-  aprovacao: "Aguardando aprovação de compra",
+  aprovacao: "Compra liberada para SAP",
   compra: "Compra pendente",
   cadastro: "Aguardando cadastro da peça",
   recebimento: "Pendente entrada e recebimento pelo Almoxarifado",
   reprovado: "Compra não aprovada",
+  cancelamento: "Cancelamento aguardando aprovação",
+  cancelado: "Solicitação cancelada",
   retirado: "Item retirado pelo PCM",
 };
 
@@ -277,10 +279,16 @@ form.addEventListener("submit", async (event) => {
   requests = [request, ...requests];
   linkPartRegistrationsToRequest(request);
   await saveRequests();
+  const savedRequest = requests.find((item) => item.id === request.id) || requests.find((item) => isSameLogicalRequest(item, request)) || request;
+  if (savedRequest.id !== request.id) {
+    linkPartRegistrationsToRequest(savedRequest);
+    await savePartRegistrations();
+  }
 
-  openEmailDraft(request, "");
-  if (request.status === "cadastro") {
-    openPartRegistrationEmailDraft(request);
+  if (savedRequest.status === "cadastro") {
+    openPartRegistrationEmailDraft(savedRequest);
+  } else {
+    openEmailDraft(savedRequest, "");
   }
 
   form.reset();
@@ -478,6 +486,9 @@ async function startApp() {
   currentFilter = currentUser.role === "cd" ? "cd" : "solicitacao";
   resetItemLines();
   await syncFromSupabase();
+  if (migratePurchaseApprovalBacklog()) {
+    await saveRequests();
+  }
   mirrorRequestsToStructuredTables(requests);
   mirrorCustomPartsToStructuredTable(customParts);
   setPage(currentPage);
@@ -510,6 +521,7 @@ function getRequestTargetLabel(request) {
 }
 
 function setPage(page) {
+  if (page === "approval") page = "purchase";
   currentPage = page;
   tabButtons.forEach((button) => button.classList.toggle("active", button.dataset.page === page));
   pages.forEach((section) => section.classList.toggle("active", section.id === `page-${page}`));
@@ -578,9 +590,6 @@ function getUserNotifications() {
     if (currentUser.role === "compras" && isPurchaseQueuePending(request) && getPurchasePendingQtySum(request) > 0) {
       push(request, "compra", "Pendente de pedido de compra", "compra", "purchase");
     }
-    if ((currentUser.role === "manager" || currentUser.role === "admin") && hasPurchaseApprovalPending(request)) {
-      push(request, "aprovacao", "Compra aguardando aprovação", "compra", "approval");
-    }
     if ((currentUser.role === "manager" || currentUser.role === "admin") && hasPurchasedItemWaitingReceipt(request)) {
       push(request, "chegada-compra", "Item comprado chegou", "compra", "history", getReceiptPendingItems(request).length);
     }
@@ -607,7 +616,7 @@ function getNotificationItemCount(request, filter) {
   if (filter === "atendimento") return request.items.filter(isPickupItemPending).length;
   if (filter === "recebimento") return getReceiptPendingItems(request).length;
   if (filter === "compra" && currentUser?.role === "compras") return request.items.filter((item) => isPurchaseItemActive(request, item)).length;
-  if (filter === "compra") return request.items.filter((item) => getPurchaseBaseQty(item) > 0 && item.purchaseApproval !== "approved" && item.purchaseApproval !== "rejected").length;
+  if (filter === "compra") return request.items.filter((item) => isPurchaseItemActive(request, item)).length;
   if (filter === "cd") return request.items.filter((item) => getCdPendingQty(item) > 0).length;
   return request.items.length;
 }
@@ -692,12 +701,18 @@ function loadRequests() {
 }
 
 function normalizeRequest(request) {
-  const normalizedStatus = normalizeStatus(request.status, request.items || []);
+  const cancellationWasApproved = Boolean(request?.cancellationApprovedAt) || request?.status === "cancelado";
+  const normalizedStatus = cancellationWasApproved ? "cancelado" : hasPendingCancellation(request) ? "cancelamento" : normalizeStatus(request.status, request.items || []);
   if (request.items) {
+    const rawItems = request.items.map((item) => normalizeItem(item, normalizedStatus));
+    const normalizedItems = normalizedStatus === "cancelado"
+      ? rawItems.map((item) => ({ ...item, status: "cancelado", statusItem: "cancelado" }))
+      : normalizePurchaseApprovalFlow(rawItems);
+    const finalStatus = normalizedStatus === "aprovacao" ? "compra" : normalizedStatus || calculateStatus(normalizedItems);
     return {
       ...request,
       targetType: request.targetType || (String(request.bus || "").toLowerCase() === "frota" ? "frota" : "prefixo"),
-      status: normalizedStatus || calculateStatus(request.items),
+      status: finalStatus,
       purchaseOrder: request.purchaseOrder || "",
       sapRequestNumber: request.sapRequestNumber || "",
       sapRequestAt: request.sapRequestAt || "",
@@ -731,13 +746,28 @@ function normalizeRequest(request) {
       transferInvoiceDataUrl: request.transferInvoiceDataUrl || "",
       receiptInvoiceName: request.receiptInvoiceName || "",
       receiptInvoiceDataUrl: request.receiptInvoiceDataUrl || "",
-      items: request.items.map((item) => normalizeItem(item, normalizedStatus)),
+      cancellationPreviousStatus: request.cancellationPreviousStatus || "",
+      cancellationRequestedAt: request.cancellationRequestedAt || "",
+      cancellationRequestedBy: request.cancellationRequestedBy || "",
+      cancellationRequestedByEmail: request.cancellationRequestedByEmail || "",
+      cancellationReason: request.cancellationReason || "",
+      cancellationApprovedAt: request.cancellationApprovedAt || "",
+      cancellationApprovedBy: request.cancellationApprovedBy || "",
+      cancellationApprovedByEmail: request.cancellationApprovedByEmail || "",
+      cancellationRejectedAt: request.cancellationRejectedAt || "",
+      cancellationRejectedBy: request.cancellationRejectedBy || "",
+      items: normalizedItems,
     };
   }
+  const rawItems = [normalizeItem({ code: "", description: request.part || "Peça sem descrição", quantity: request.quantity || 1 }, normalizedStatus)];
+  const normalizedItems = normalizedStatus === "cancelado"
+    ? rawItems.map((item) => ({ ...item, status: "cancelado", statusItem: "cancelado" }))
+    : normalizePurchaseApprovalFlow(rawItems);
+  const finalStatus = normalizedStatus === "aprovacao" ? "compra" : normalizedStatus;
   return {
     ...request,
     targetType: request.targetType || (String(request.bus || "").toLowerCase() === "frota" ? "frota" : "prefixo"),
-    status: normalizedStatus,
+    status: finalStatus,
     purchaseOrder: request.purchaseOrder || "",
     sapRequestNumber: request.sapRequestNumber || "",
     sapRequestAt: request.sapRequestAt || "",
@@ -771,12 +801,22 @@ function normalizeRequest(request) {
     transferInvoiceDataUrl: request.transferInvoiceDataUrl || "",
     receiptInvoiceName: request.receiptInvoiceName || "",
     receiptInvoiceDataUrl: request.receiptInvoiceDataUrl || "",
-    items: [normalizeItem({ code: "", description: request.part || "Peça sem descrição", quantity: request.quantity || 1 }, normalizedStatus)],
+    cancellationPreviousStatus: request.cancellationPreviousStatus || "",
+    cancellationRequestedAt: request.cancellationRequestedAt || "",
+    cancellationRequestedBy: request.cancellationRequestedBy || "",
+    cancellationRequestedByEmail: request.cancellationRequestedByEmail || "",
+    cancellationReason: request.cancellationReason || "",
+    cancellationApprovedAt: request.cancellationApprovedAt || "",
+    cancellationApprovedBy: request.cancellationApprovedBy || "",
+    cancellationApprovedByEmail: request.cancellationApprovedByEmail || "",
+    cancellationRejectedAt: request.cancellationRejectedAt || "",
+    cancellationRejectedBy: request.cancellationRejectedBy || "",
+    items: normalizedItems,
   };
 }
 
 function normalizeStatus(status, items = []) {
-  if (status === "solicitacao" || status === "cadastro" || status === "cd" || status === "atendimento" || status === "aprovacao" || status === "compra" || status === "recebimento" || status === "reprovado" || status === "retirado") return status;
+  if (status === "solicitacao" || status === "cadastro" || status === "cd" || status === "atendimento" || status === "aprovacao" || status === "compra" || status === "recebimento" || status === "cancelamento" || status === "cancelado" || status === "reprovado" || status === "retirado") return status;
   if (status === "pendente") return "solicitacao";
   if (status === "estoque" || status === "atendida") return "atendimento";
   if (status === "compra" || status === "parcial") return "compra";
@@ -808,6 +848,46 @@ function normalizeItem(item, requestStatus = "solicitacao") {
   return { ...item, ...pendingData, quantity, availableQty: 0, cdQty: 0, purchaseQty: 0, withdrawnQty: 0, purchaseApproval: item.purchaseApproval || "" };
 }
 
+function normalizePurchaseApprovalFlow(items) {
+  return items.map((item) => {
+    const purchaseQty = Number(item.purchaseQty) || 0;
+    if (purchaseQty > 0 && item.purchaseApproval !== "rejected") {
+      return { ...item, purchaseApproval: "approved" };
+    }
+    return item;
+  });
+}
+
+function migratePurchaseApprovalBacklog() {
+  let changed = false;
+  requests = requests.map((request) => {
+    if (request.status === "cancelado" || request.cancellationApprovedAt) {
+      if (request.status === "cancelado") return request;
+      changed = true;
+      return {
+        ...request,
+        status: "cancelado",
+        items: request.items.map((item) => ({ ...item, status: "cancelado", statusItem: "cancelado" })),
+      };
+    }
+    if (request.status !== "aprovacao" && !request.items.some((item) => Number(item.purchaseQty) > 0 && item.purchaseApproval === "pending")) {
+      return request;
+    }
+    changed = true;
+    const now = new Date().toISOString();
+    return {
+      ...request,
+      status: request.status === "aprovacao" ? "compra" : request.status,
+      purchaseApprovalRequestedAt: "",
+      purchaseApprovedAt: request.purchaseApprovedAt || now,
+      purchaseApprovedBy: request.purchaseApprovedBy || "Fluxo automático",
+      response: request.response || "Saldo pendente liberado diretamente para abertura da solicitação SAP.",
+      items: request.items.map((item) => Number(item.purchaseQty) > 0 && item.purchaseApproval !== "rejected" ? { ...item, purchaseApproval: "approved" } : item),
+    };
+  });
+  return changed;
+}
+
 async function syncFromSupabase() {
   if (!supabaseClient) {
     setSupabaseStatus("offline", "Supabase: não conectado");
@@ -833,7 +913,8 @@ async function syncFromSupabase() {
     }
 
     if (syncedRequests) {
-      requests = syncedRequests.map(normalizeRequest).sort((a, b) => String(b.createdAt || "").localeCompare(String(a.createdAt || "")));
+      requests = mergeRequestCollections(requests, syncedRequests.map(normalizeRequest))
+        .sort((a, b) => String(b.createdAt || "").localeCompare(String(a.createdAt || "")));
       localStorage.setItem(REQUESTS_KEY, JSON.stringify(requests));
     }
     if (remoteUsers) {
@@ -909,12 +990,12 @@ async function flushSupabaseWrites() {
 }
 
 async function loadSupabaseRows(table, keyField) {
-  const { data, error } = await supabaseClient.from(table).select(`${keyField}, data`);
+  const { data, error } = await supabaseClient.from(table).select(`${keyField}, data, updated_at`);
   if (error) {
     console.warn(`Erro ao carregar ${table}:`, error.message);
     return null;
   }
-  return (data || []).map((row) => row.data).filter(Boolean);
+  return (data || []).map((row) => row.data ? { ...row.data, updatedAt: row.data.updatedAt || row.updated_at || "" } : null).filter(Boolean);
 }
 
 async function loadAccountForLogin(login) {
@@ -1031,7 +1112,11 @@ async function loadEmailSettingsFromSupabase() {
 
 function upsertSupabaseRows(table, keyField, rows) {
   if (!supabaseClient) return Promise.resolve();
-  const payload = rows.map((row) => ({ [keyField]: row[keyField], data: row, updated_at: new Date().toISOString() }));
+  const now = new Date().toISOString();
+  const payload = rows.map((row) => {
+    const data = { ...row, updatedAt: row.updatedAt || now };
+    return { [keyField]: row[keyField], data, updated_at: data.updatedAt };
+  });
   if (payload.length === 0) return Promise.resolve();
   return trackSupabaseWrite(supabaseClient.from(table).upsert(payload, { onConflict: keyField }), table);
 }
@@ -1087,6 +1172,21 @@ function mergeRequestByProgress(localRequest, remoteRequest) {
   return getRequestLastChange(remoteRequest) > getRequestLastChange(localRequest) ? remoteRequest : localRequest;
 }
 
+function mergeRequestCollections(localRows = [], remoteRows = []) {
+  const merged = new Map();
+  remoteRows.forEach((row) => {
+    if (!row?.id) return;
+    merged.set(row.id, normalizeRequest(row));
+  });
+  localRows.forEach((row) => {
+    if (!row?.id) return;
+    const localRequest = normalizeRequest(row);
+    const remoteRequest = merged.get(localRequest.id);
+    merged.set(localRequest.id, remoteRequest ? mergeRequestByProgress(localRequest, remoteRequest) : localRequest);
+  });
+  return [...merged.values()];
+}
+
 function isSameLogicalRequest(localRequest, remoteRequest) {
   if (!localRequest || !remoteRequest) return false;
   if (localRequest.createdAt && remoteRequest.createdAt && localRequest.createdAt === remoteRequest.createdAt) return true;
@@ -1130,13 +1230,15 @@ function getStatusRank(status) {
     recebimento: 5,
     atendimento: 6,
     reprovado: 6,
+    cancelamento: 6,
     retirado: 7,
+    cancelado: 8,
   };
   return ranks[status] || 0;
 }
 
 function getRequestLastChange(request) {
-  const dates = getRequestStageDates(request).map((date) => new Date(date).getTime()).filter((time) => Number.isFinite(time));
+  const dates = [request.updatedAt, ...getRequestStageDates(request)].map((date) => new Date(date).getTime()).filter((time) => Number.isFinite(time));
   return dates.length ? Math.max(...dates) : 0;
 }
 
@@ -1404,8 +1506,28 @@ function deleteSupabaseRow(table, keyField, keyValue) {
 }
 
 function saveRequests() {
+  const now = new Date().toISOString();
+  const previousById = getStoredRequestsById();
+  requests = requests.map((request) => {
+    const previous = previousById.get(request.id);
+    const changed = !previous || getComparableRequestPayload(previous) !== getComparableRequestPayload(request);
+    return { ...request, updatedAt: changed ? now : request.updatedAt || previous?.updatedAt || now };
+  });
   localStorage.setItem(REQUESTS_KEY, JSON.stringify(requests));
   return upsertMergedRequestRows(requests).then(() => trackSupabaseWrite(mirrorRequestsToStructuredTables(requests), "solicitações estruturadas"));
+}
+
+function getStoredRequestsById() {
+  try {
+    return new Map(JSON.parse(localStorage.getItem(REQUESTS_KEY) || "[]").map((request) => [request.id, request]));
+  } catch {
+    return new Map();
+  }
+}
+
+function getComparableRequestPayload(request) {
+  const { updatedAt, ...rest } = request || {};
+  return JSON.stringify(rest);
 }
 
 function loadManagedUsers() {
@@ -1490,6 +1612,7 @@ function splitEmailLikeList(value) {
   return String(value || "")
     .split(/[;,]+/)
     .map((email) => email.trim())
+    .filter((email) => !["email@jtptransportes.com.br", "outro@email.com"].includes(email.toLowerCase()))
     .filter(Boolean);
 }
 
@@ -1798,12 +1921,12 @@ async function makeCode() {
   const usedIds = new Set(requests.map((request) => request.id).filter(Boolean));
   if (supabaseClient) {
     try {
-      const { data, error } = await supabaseClient.from("manupecas_requests").select("id");
-      if (!error) {
-        (data || []).forEach((row) => {
-          if (row.id) usedIds.add(row.id);
-        });
-      }
+      const [{ data, error }, { data: structuredData, error: structuredError }] = await Promise.all([
+        supabaseClient.from("manupecas_requests").select("id"),
+        supabaseClient.from("solicitacoes").select("numero"),
+      ]);
+      if (!error) (data || []).forEach((row) => row.id && usedIds.add(row.id));
+      if (!structuredError) (structuredData || []).forEach((row) => row.numero && usedIds.add(row.numero));
     } catch (error) {
       console.warn("Não foi possível consultar a numeração no Supabase.", error);
     }
@@ -1861,6 +1984,11 @@ function render() {
   list.innerHTML = "";
 
   const visible = requests.filter((request) => {
+    const isCancellation = getDisplayStatus(request) === "cancelamento";
+    const isCanceled = request.status === "cancelado";
+    const requestedByCurrentUser = normalizeLogin(request.cancellationRequestedByEmail || request.requestedByEmail || request.requestedBy) === currentUser.email;
+    if (isCanceled) return false;
+    if (isCancellation) return (currentUser.role === "admin" && currentFilter === "solicitacao") || requestedByCurrentUser || (currentUser.role === "almox" && request.cancellationRequestedByEmail === currentUser.email);
     if (currentUser.role === "pcm") {
       if (currentFilter === "atendimento") return hasPickupPending(request);
       if (currentFilter === "compra") return request.status === "aprovacao" || request.status === "compra" || request.status === "recebimento" || request.status === "reprovado";
@@ -1907,6 +2035,7 @@ function createCard(request) {
   const displayItems = getDisplayItemsForCurrentView(request);
   const status = card.querySelector(".status-pill");
   const response = card.querySelector(".response");
+  const cancelPanel = card.querySelector(".cancel-panel");
   const note = card.querySelector("textarea");
   const partsList = card.querySelector(".parts-list");
   const fulfillmentPanel = card.querySelector(".fulfillment-panel");
@@ -1937,6 +2066,7 @@ function createCard(request) {
   const isReceiptFlow = currentFilter === "recebimento" && displayStatus === "recebimento";
   const isAlmoxPurchaseQueue = isPurchaseQueuePending(request) && currentUser.role === "almox" && currentFilter === "compra";
   const isBuyerPurchaseQueue = isPurchaseQueuePending(request) && currentUser.role === "compras";
+  const isCancellationStatus = getDisplayStatus(request) === "cancelamento" || getDisplayStatus(request) === "cancelado";
   const canCurrentUserReceive = (currentUser.role === "almox" || currentUser.role === "cd") && currentFilter === "recebimento";
   const isReceiptQueue = isReceiptFlow && canCurrentUserReceive;
   status.textContent = getRequestStatusText(request, displayStatus);
@@ -1958,6 +2088,7 @@ function createCard(request) {
   card.querySelector(".reason").textContent = request.reason;
   response.textContent = request.response;
   note.value = request.response;
+  renderCancellationPanel(request, cancelPanel);
   purchaseTitle.textContent = isReceiptFlow ? "Recebimento e entrada SAP" : "Compra";
   sapRequestInput.value = request.sapRequestNumber || "";
   sapRequestInput.readOnly = currentUser.role !== "almox" || Boolean(request.sapRequestNumber);
@@ -2008,7 +2139,7 @@ function createCard(request) {
       </div>
     `;
     partsList.append(li);
-    if (request.status !== "cadastro" && request.status !== "compra" && request.status !== "aprovacao" && request.status !== "recebimento" && !pickupMode) {
+    if (request.status !== "cadastro" && request.status !== "compra" && request.status !== "aprovacao" && request.status !== "recebimento" && request.status !== "cancelamento" && request.status !== "cancelado" && !pickupMode) {
       if (currentUser.role === "cd") {
         if (getCdPendingQty(item) > 0) fulfillmentList.append(createCdFulfillmentLine(item, index));
       } else {
@@ -2023,6 +2154,11 @@ function createCard(request) {
   }
 
   if (request.status === "aprovacao") {
+    fulfillmentPanel.hidden = true;
+    purchaseWorkflow.classList.remove("active");
+  }
+
+  if (request.status === "cancelamento" || request.status === "cancelado") {
     fulfillmentPanel.hidden = true;
     purchaseWorkflow.classList.remove("active");
   }
@@ -2050,7 +2186,7 @@ function createCard(request) {
     emailButton.addEventListener("click", () => {
       saveCdFulfillment(request.id, card, true);
     });
-  } else if (request.status !== "cadastro" && request.status !== "compra" && request.status !== "aprovacao" && request.status !== "recebimento") {
+  } else if (request.status !== "cadastro" && request.status !== "compra" && request.status !== "aprovacao" && request.status !== "recebimento" && request.status !== "cancelamento" && request.status !== "cancelado") {
     card.querySelector(".transfer-invoice-field").hidden = true;
     card.querySelector(".save-fulfillment").addEventListener("click", () => {
       saveFulfillment(request.id, card, false);
@@ -2091,8 +2227,8 @@ function createCard(request) {
   const purchaseLines = isReceiptFlow
     ? getReceiptPendingItems(request)
     : request.items.filter((item) => isPurchaseItemActive(request, item));
-  fulfillmentPanel.hidden = (request.status === "cadastro" || isPurchaseQueuePending(request) || request.status === "aprovacao" || isReceiptFlow) && !pickupMode ? true : false;
-  purchaseWorkflow.classList.toggle("active", (((isPurchaseQueuePending(request) && currentUser.role === "compras") || (isPurchaseQueuePending(request) && currentUser.role === "almox" && currentFilter === "compra") || isReceiptQueue) && !pickupMode));
+  fulfillmentPanel.hidden = (request.status === "cadastro" || isCancellationStatus || isPurchaseQueuePending(request) || request.status === "aprovacao" || isReceiptFlow) && !pickupMode ? true : false;
+  purchaseWorkflow.classList.toggle("active", (((isPurchaseQueuePending(request) && currentUser.role === "compras") || (isPurchaseQueuePending(request) && currentUser.role === "almox" && currentFilter === "compra") || isReceiptQueue) && !pickupMode && !isCancellationStatus));
   purchaseItems.innerHTML = purchaseLines.length
     ? purchaseLines.map((item) => {
       const cdReceiptQty = Number(item.cdQty) || 0;
@@ -2187,6 +2323,142 @@ function createCard(request) {
 function createRequestCardTitle(request, items) {
   const count = items.length || request.items?.length || 0;
   return `${formatItemCount(count)} nesta solicitação`;
+}
+
+function canRequestCancellation(request) {
+  if (!request || !currentUser) return false;
+  if (request.cancellationApprovedAt || hasPendingCancellation(request) || request.status === "cancelamento" || request.status === "cancelado" || request.status === "retirado") return false;
+  return currentUser.role === "pcm" || currentUser.role === "almox";
+}
+
+function canReviewCancellation(request) {
+  return currentUser?.role === "admin" && (request?.status === "cancelamento" || hasPendingCancellation(request));
+}
+
+function hasPendingCancellation(request) {
+  return Boolean(request?.cancellationRequestedAt && !request?.cancellationApprovedAt && !request?.cancellationRejectedAt && request?.status !== "cancelado");
+}
+
+function renderCancellationPanel(request, panel) {
+  if (!panel) return;
+  const isCanceled = request.status === "cancelado" || Boolean(request.cancellationApprovedAt);
+  const hasCancellationData = request.status === "cancelamento" || isCanceled || request.cancellationRequestedAt || request.cancellationRejectedAt;
+  if (!hasCancellationData && !canRequestCancellation(request)) {
+    panel.hidden = true;
+    panel.innerHTML = "";
+    return;
+  }
+
+  panel.hidden = false;
+  const requestedBy = request.cancellationRequestedBy || "-";
+  const requestedAt = formatDateOrDash(request.cancellationRequestedAt);
+  const reason = request.cancellationReason || "Sem motivo informado.";
+
+  if (isCanceled) {
+    panel.innerHTML = `
+      <div class="cancel-box done">
+        <strong>Solicitação cancelada</strong>
+        <span>Solicitado por ${escapeHtml(requestedBy)} em ${escapeHtml(requestedAt)}.</span>
+        <span>Aprovado por ${escapeHtml(request.cancellationApprovedBy || "Admin")} em ${escapeHtml(formatDateOrDash(request.cancellationApprovedAt))}.</span>
+        <em>${escapeHtml(reason)}</em>
+      </div>`;
+    return;
+  }
+
+  if (request.status === "cancelamento" || hasPendingCancellation(request)) {
+    panel.innerHTML = `
+      <div class="cancel-box pending">
+        <strong>Cancelamento aguardando aprovação do Admin</strong>
+        <span>Solicitado por ${escapeHtml(requestedBy)} em ${escapeHtml(requestedAt)}.</span>
+        <em>${escapeHtml(reason)}</em>
+        ${canReviewCancellation(request) ? `
+          <div class="cancel-actions">
+            <button class="action available approve-cancel" type="button">Aprovar cancelamento</button>
+            <button class="action reset reject-cancel" type="button">Recusar cancelamento</button>
+          </div>` : ""}
+      </div>`;
+    const approveButton = panel.querySelector(".approve-cancel");
+    const rejectButton = panel.querySelector(".reject-cancel");
+    if (approveButton) approveButton.addEventListener("click", () => approveCancellation(request.id));
+    if (rejectButton) rejectButton.addEventListener("click", () => rejectCancellation(request.id));
+    return;
+  }
+
+  panel.innerHTML = `
+    <div class="cancel-box">
+      <strong>Cancelamento da solicitação</strong>
+      <span>Use apenas quando a solicitação estiver incorreta ou não puder seguir.</span>
+      ${request.cancellationRejectedAt ? `<em>Última recusa: ${escapeHtml(formatDateOrDash(request.cancellationRejectedAt))} por ${escapeHtml(request.cancellationRejectedBy || "Admin")}.</em>` : ""}
+      <div class="cancel-actions">
+        <button class="action reset request-cancel" type="button">Solicitar cancelamento</button>
+      </div>
+    </div>`;
+  panel.querySelector(".request-cancel")?.addEventListener("click", () => requestCancellation(request.id));
+}
+
+async function requestCancellation(id) {
+  const request = requests.find((item) => item.id === id);
+  if (!canRequestCancellation(request)) return;
+  const reason = window.prompt("Informe o motivo do cancelamento:");
+  if (reason === null) return;
+  const now = new Date().toISOString();
+  const userName = currentUser.name || currentUser.label || currentUser.email;
+  requests = requests.map((item) => item.id === id ? {
+    ...item,
+    status: "cancelamento",
+    cancellationPreviousStatus: item.status,
+    cancellationRequestedAt: now,
+    cancellationRequestedBy: userName,
+    cancellationRequestedByEmail: currentUser.email,
+    cancellationReason: reason.trim(),
+    cancellationApprovedAt: "",
+    cancellationApprovedBy: "",
+    cancellationApprovedByEmail: "",
+    cancellationRejectedAt: "",
+    cancellationRejectedBy: "",
+    response: reason.trim()
+      ? `Cancelamento solicitado por ${userName}. Motivo: ${reason.trim()}`
+      : `Cancelamento solicitado por ${userName}.`,
+  } : item);
+  await saveRequests();
+  render();
+}
+
+async function approveCancellation(id) {
+  const request = requests.find((item) => item.id === id);
+  if (!canReviewCancellation(request)) return;
+  const now = new Date().toISOString();
+  const userName = currentUser.name || currentUser.label || currentUser.email;
+  requests = requests.map((item) => item.id === id ? {
+    ...item,
+    status: "cancelado",
+    items: item.items.map((part) => ({ ...part, status: "cancelado", statusItem: "cancelado" })),
+    cancellationApprovedAt: now,
+    cancellationApprovedBy: userName,
+    cancellationApprovedByEmail: currentUser.email,
+    cancellationRejectedAt: "",
+    cancellationRejectedBy: "",
+    response: `Solicitação cancelada por aprovação do Admin ${userName}.`,
+  } : item);
+  await saveRequests();
+  render();
+}
+
+async function rejectCancellation(id) {
+  const request = requests.find((item) => item.id === id);
+  if (!canReviewCancellation(request)) return;
+  const restoredStatus = normalizeStatus(request.cancellationPreviousStatus, request.items) || calculateStatus(request.items);
+  const now = new Date().toISOString();
+  const userName = currentUser.name || currentUser.label || currentUser.email;
+  requests = requests.map((item) => item.id === id ? {
+    ...item,
+    status: restoredStatus === "cancelamento" || restoredStatus === "cancelado" ? calculateStatus(item.items) : restoredStatus,
+    cancellationRejectedAt: now,
+    cancellationRejectedBy: userName,
+    response: `Cancelamento recusado pelo Admin ${userName}. Solicitação mantida em aberto.`,
+  } : item);
+  await saveRequests();
+  render();
 }
 
 function createFulfillmentLine(item, index) {
@@ -2287,7 +2559,7 @@ async function saveFulfillment(id, card, shouldEmail) {
   const status = calculateAlmoxStatus(updatedItems);
   const finalItems = updatedItems.map((item) => {
     if (getPurchaseBaseQty(item) > 0) {
-      return { ...item, purchaseApproval: item.purchaseApproval || "pending" };
+      return { ...item, purchaseApproval: "approved" };
     }
     return item;
   });
@@ -2296,7 +2568,7 @@ async function saveFulfillment(id, card, shouldEmail) {
   const updatedRequest = { ...request, items: finalItems, status, response, answeredAt: new Date().toISOString() };
   updatedRequest.attendedAt = updatedRequest.answeredAt;
   updatedRequest.purchaseAt = status === "compra" ? updatedRequest.answeredAt : request.purchaseAt || "";
-  updatedRequest.purchaseApprovalRequestedAt = finalItems.some((item) => item.purchaseApproval === "pending") ? request.purchaseApprovalRequestedAt || updatedRequest.answeredAt : request.purchaseApprovalRequestedAt || "";
+  updatedRequest.purchaseApprovalRequestedAt = "";
   updatedRequest.almoxBy = currentUser.name || currentUser.label;
   updatedRequest.almoxByEmail = currentUser.email;
 
@@ -2328,7 +2600,7 @@ async function saveCdFulfillment(id, card, shouldEmail) {
   const status = cdAnsweredQty > 0 ? "recebimento" : calculateCdStatus(updatedItems);
   const finalItems = updatedItems.map((item) => {
     if (getPurchaseBaseQty(item) > 0) {
-      return { ...item, purchaseApproval: item.purchaseApproval || "pending" };
+      return { ...item, purchaseApproval: "approved" };
     }
     return item;
   });
@@ -2357,7 +2629,7 @@ async function saveCdFulfillment(id, card, shouldEmail) {
     transferInvoiceName,
     transferInvoiceDataUrl,
     purchaseAt: request.purchaseAt || "",
-    purchaseApprovalRequestedAt: finalItems.some((item) => item.purchaseApproval === "pending") ? request.purchaseApprovalRequestedAt || now : request.purchaseApprovalRequestedAt || "",
+    purchaseApprovalRequestedAt: "",
     attendedAt: request.attendedAt || now,
   };
 
@@ -2389,7 +2661,7 @@ async function savePurchaseOrder(id, card, shouldEmail) {
   }
   const updatedRequest = {
     ...request,
-    items: request.items.map((item) => (item.purchaseApproval === "approved" ? { ...item, purchaseQty: getPurchasePendingQty(item) } : item)),
+    items: request.items.map((item) => (isPurchaseItemActive(request, item) ? { ...item, purchaseQty: getPurchasePendingQty(item), purchaseApproval: "approved" } : item)),
     purchaseOrder,
     buyerNote,
     deliveryDate,
@@ -2504,13 +2776,13 @@ async function confirmReceiptEntry(id, card) {
       purchaseQty: purchasedQty > 0 ? 0 : Number(item.purchaseQty) || getPurchasePendingQty(item),
     };
   });
-  const hasApprovalPendingAfterReceipt = items.some((item) => getPurchaseBaseQty(item) > 0 && item.purchaseApproval !== "approved" && item.purchaseApproval !== "rejected");
+  const hasApprovalPendingAfterReceipt = false;
   const hasApprovedPurchaseAfterReceipt = items.some((item) => getPurchasePendingQty(item) > 0 && item.purchaseApproval === "approved");
   const updatedRequest = {
     ...request,
-    status: hasApprovalPendingAfterReceipt ? "aprovacao" : hasApprovedPurchaseAfterReceipt ? "compra" : "atendimento",
-    items: hasApprovalPendingAfterReceipt
-      ? items.map((item) => (getPurchaseBaseQty(item) > 0 ? { ...item, purchaseApproval: item.purchaseApproval || "pending" } : item))
+    status: hasApprovedPurchaseAfterReceipt ? "compra" : "atendimento",
+    items: hasApprovedPurchaseAfterReceipt
+      ? items.map((item) => (getPurchaseBaseQty(item) > 0 ? { ...item, purchaseApproval: "approved" } : item))
       : items,
     purchaseArrivedDate: hadPurchaseArrival ? purchaseArrivedDate : request.purchaseArrivedDate || "",
     purchaseArrivedAt: hadPurchaseArrival ? request.purchaseArrivedAt || now : request.purchaseArrivedAt || "",
@@ -2520,10 +2792,8 @@ async function confirmReceiptEntry(id, card) {
     receiptAt: now,
     receiptBy: currentUser.name || currentUser.label,
     receiptByEmail: currentUser.email,
-    purchaseApprovalRequestedAt: hasApprovalPendingAfterReceipt ? request.purchaseApprovalRequestedAt || now : request.purchaseApprovalRequestedAt || "",
-    response: hasApprovalPendingAfterReceipt
-      ? `Recebimento confirmado pelo Almoxarifado. Entrada SAP: ${receiptNumber}. Saldo pendente enviado para aprovação de compra.`
-      : hasApprovedPurchaseAfterReceipt
+    purchaseApprovalRequestedAt: "",
+    response: hasApprovedPurchaseAfterReceipt
       ? `Recebimento confirmado pelo Almoxarifado. Entrada SAP: ${receiptNumber}. Saldo aprovado aguardando pedido de compra.`
       : `Recebimento confirmado pelo Almoxarifado. Entrada SAP: ${receiptNumber}. Data de chegada: ${formatDateOnly(purchaseArrivedDate)}. Retirada liberada para o PCM.`,
   };
@@ -2605,7 +2875,7 @@ function calculateStatus(items) {
     { requested: 0, available: 0, cd: 0, purchase: 0 }
   );
 
-  if (totals.purchase > 0) return "aprovacao";
+  if (totals.purchase > 0) return "compra";
   if (totals.available + totals.cd >= totals.requested && totals.requested > 0) return totals.cd > 0 ? "recebimento" : "atendimento";
   if (totals.available > 0) return "cd";
   return "solicitacao";
@@ -2618,7 +2888,7 @@ function calculateAlmoxStatus(items) {
   const purchase = items.reduce((sum, item) => sum + getPurchasePendingQty(item), 0);
   if (available >= requested && requested > 0) return "atendimento";
   if (cdPending > 0) return "cd";
-  if (purchase > 0) return "aprovacao";
+  if (purchase > 0) return "compra";
   return "cd";
 }
 
@@ -2634,7 +2904,7 @@ function calculateCdStatus(items) {
     { requested: 0, available: 0, cd: 0, purchase: 0 }
   );
 
-  if (totals.purchase > 0) return "aprovacao";
+  if (totals.purchase > 0) return "compra";
   if (totals.available + totals.cd >= totals.requested && totals.requested > 0) return totals.cd > 0 ? "recebimento" : "atendimento";
   return "cd";
 }
@@ -2686,7 +2956,7 @@ function getDisplayItemsForCurrentView(request) {
 }
 
 function hasPurchaseApprovalPending(request) {
-  return Boolean(request?.items?.some((item) => getPurchaseBaseQty(item) > 0 && item.purchaseApproval !== "approved" && item.purchaseApproval !== "rejected"));
+  return false;
 }
 
 function hasApprovedPurchasePending(request) {
@@ -2695,7 +2965,7 @@ function hasApprovedPurchasePending(request) {
 
 function isPurchaseItemActive(request, item) {
   if (!request || !item || getPurchasePendingQty(item) <= 0) return false;
-  return item.purchaseApproval === "approved" || request.status === "compra";
+  return item.purchaseApproval === "approved" || request.status === "compra" || request.status === "aprovacao";
 }
 
 function isPurchaseQueuePending(request) {
@@ -2733,16 +3003,18 @@ function getReceiptPendingItems(request) {
 
 function getDisplayStatus(request) {
   if (!request) return "solicitacao";
+  if (request.status === "cancelado" || request.cancellationApprovedAt) return "cancelado";
+  if (hasPendingCancellation(request)) return "cancelamento";
+  if (request.status === "cancelamento" || request.status === "cancelado") return request.status;
   const hasPendingRegistration = request.items.some(isPendingRegistrationItem);
   const hasCdPending = request.items.some((item) => getCdPendingQty(item) > 0);
   const hasPurchasePending = request.items.some((item) => getPurchasePendingQty(item) > 0);
-  const hasPendingApproval = hasPurchaseApprovalPending(request);
   const hasCdReceipt = request.items.some((item) => Number(item.cdQty) > 0);
   const hasReceiptPending = getReceiptPendingItems(request).length > 0;
   if (request.status === "cadastro" && hasPendingRegistration) return "cadastro";
   if (request.status === "cadastro" && !hasPendingRegistration) return calculateStatus(request.items);
-  if (request.status === "cd" && !hasCdPending && hasPendingApproval) return "aprovacao";
-  if (request.status === "cd" && !hasCdPending && hasPurchasePending) return "aprovacao";
+  if (request.status === "aprovacao") return "compra";
+  if (request.status === "cd" && !hasCdPending && hasPurchasePending) return "compra";
   if (request.status === "recebimento" && !hasReceiptPending && hasPurchasePending) return "compra";
   if (request.status === "recebimento" || hasCdReceipt || hasReceiptPending) return "recebimento";
   return request.status;
@@ -2993,6 +3265,7 @@ function updateManagerDashboard() {
 }
 
 function updateCopy() {
+  document.querySelector(".approval-tab")?.setAttribute("hidden", "");
   if (currentUser.role === "pcm") {
     queueEyebrow.textContent = "PCM";
     queueTitle.textContent = "Minhas etapas";
@@ -3365,9 +3638,9 @@ function renderPartRegistrations() {
         </label>
         <div><small>Status</small><b>${done ? item.resolvedAsExisting ? "Já existia" : "Cadastrado" : "Pendente SAP"}</b></div>
         <div class="user-actions">
-          <button class="secondary-action compact" type="button" data-part-action="existing" ${done || !canManage ? "disabled" : ""}>Já existe</button>
-          <button class="secondary-action compact" type="button" data-part-action="save" ${done || !canManage ? "disabled" : ""}>Criar cadastro</button>
-          <button class="danger-action compact" type="button" data-part-action="delete" ${!canManage ? "disabled" : ""}>Excluir</button>
+          ${done ? "" : `<button class="secondary-action compact" type="button" data-part-action="existing" ${!canManage ? "disabled" : ""}>Já existe</button>
+          <button class="secondary-action compact" type="button" data-part-action="save" ${!canManage ? "disabled" : ""}>Criar cadastro</button>
+          <button class="danger-action compact" type="button" data-part-action="delete" ${!canManage ? "disabled" : ""}>Excluir</button>`}
         </div>
       </article>`;
     })
@@ -3704,6 +3977,14 @@ function createHistoryTimeline(request) {
       date: request.withdrawnAt || request.pickupAt,
       sla: request.withdrawnAt || request.pickupAt ? formatDuration(request.createdAt, request.withdrawnAt || request.pickupAt) : "-",
       state: request.withdrawnAt ? "done" : hasPickupPending(request) ? "active" : request.pickupAt ? "done" : "idle",
+    },
+    {
+      label: "Cancelamento",
+      status: request.status === "cancelado" ? "Cancelamento aprovado" : request.status === "cancelamento" ? "Aguardando aprovação" : request.cancellationRejectedAt ? "Cancelamento recusado" : "Não solicitado",
+      owner: request.cancellationApprovedBy || request.cancellationRejectedBy || request.cancellationRequestedBy || "-",
+      date: request.cancellationApprovedAt || request.cancellationRejectedAt || request.cancellationRequestedAt,
+      sla: request.cancellationRequestedAt ? formatDuration(request.cancellationRequestedAt, request.cancellationApprovedAt || request.cancellationRejectedAt || new Date().toISOString()) : "-",
+      state: request.status === "cancelado" ? "done" : request.status === "cancelamento" ? "active" : request.cancellationRejectedAt ? "done" : "idle",
     },
   ];
 
@@ -4192,19 +4473,80 @@ function getEmailRecipients(step, fallback = "") {
   const uniqueTo = to.filter((email, index, list) => list.indexOf(email) === index);
   const toSet = new Set(uniqueTo.map((email) => email.toLowerCase()));
   const uniqueCc = cc.filter((email, index, list) => email && !toSet.has(email.toLowerCase()) && list.indexOf(email) === index);
+  const hasConfiguredRecipient = uniqueTo.length > 0 || uniqueCc.length > 0;
   return {
-    to: uniqueTo.join(";") || normalizeEmailList(fallback),
+    step,
+    fallback,
+    to: uniqueTo.join(";") || (hasConfiguredRecipient ? "" : normalizeEmailList(fallback)),
     cc: uniqueCc.join(";"),
   };
 }
 
 function openMailDraft(to, subject, bodyText) {
   const recipients = typeof to === "object" && to !== null ? to : { to };
-  const recipient = String(recipients.to || "").trim();
-  const cc = String(recipients.cc || "").trim();
-  const ccParam = cc ? `&cc=${encodeURIComponent(cc)}` : "";
   flushSupabaseWrites();
-  window.location.href = `mailto:${encodeURIComponent(recipient)}?subject=${encodeURIComponent(subject)}${ccParam}&body=${encodeURIComponent(bodyText)}`;
+  const popup = window.open("about:blank", "_blank");
+  if (popup) {
+    popup.document?.write?.("<p style=\"font-family:Arial,sans-serif;padding:24px\">Abrindo Outlook Web...</p>");
+  }
+  openMailDraftInOutlookWeb(recipients, subject, bodyText, popup);
+}
+
+function openMailDraftInOutlookWeb(recipients, subject, bodyText, popup) {
+  let finalRecipients = recipients;
+  if (recipients.step) {
+    finalRecipients = getEmailRecipients(recipients.step, recipients.fallback || "");
+  }
+  const recipient = formatOutlookWebRecipients(finalRecipients.to);
+  const cc = formatOutlookWebRecipients(finalRecipients.cc);
+  const mailtoQuery = [
+    cc ? ["cc", cc] : null,
+    ["subject", cleanEmailText(subject || "")],
+    ["body", cleanEmailText(bodyText || "")],
+  ]
+    .filter(Boolean)
+    .map(([key, value]) => `${key}=${encodeURIComponent(value)}`)
+    .join("&");
+  const mailtoUrl = `mailto:${recipient}?${mailtoQuery}`;
+  const outlookUrl = `https://outlook.office.com/mail/deeplink/compose?mailtouri=${encodeURIComponent(mailtoUrl)}`;
+  if (popup) popup.location.href = outlookUrl;
+  else window.open(outlookUrl, "_blank");
+}
+
+function cleanEmailText(value) {
+  return String(value || "")
+    .replaceAll("ÇÃO", "ÇÃO")
+    .replaceAll("ÇÕES", "ÇÕES")
+    .replaceAll("ção", "ção")
+    .replaceAll("ção", "ção")
+    .replaceAll("ções", "ções")
+    .replaceAll("Ç", "Ç")
+    .replaceAll("ç", "ç")
+    .replaceAll("ã", "ã")
+    .replaceAll("õ", "õ")
+    .replaceAll("á", "á")
+    .replaceAll("é", "é")
+    .replaceAll("í", "í")
+    .replaceAll("ó", "ó")
+    .replaceAll("ú", "ú")
+    .replaceAll("â", "â")
+    .replaceAll("ê", "ê")
+    .replaceAll("ô", "ô")
+    .replaceAll("À", "À")
+    .replaceAll("É", "É")
+    .replaceAll("Ó", "Ó")
+    .replaceAll("Ú", "Ú")
+    .replaceAll("º", "º")
+    .replaceAll("ª", "ª")
+    .replaceAll("", "");
+}
+
+function formatOutlookWebRecipients(value) {
+  return String(value || "")
+    .split(/[;,]/)
+    .map((item) => item.trim())
+    .filter(Boolean)
+    .join(",");
 }
 
 function buildEmailSubject(request, step) {
@@ -4365,6 +4707,7 @@ function createProcessMap(request) {
     { key: "compra", label: "Compra", date: request.purchaseAt, done: Boolean(hasPurchaseReceipt(request)), active: getDisplayStatus(request) === "compra" || (getDisplayStatus(request) === "recebimento" && isPurchaseArrivalRegistered(request)), requested: Boolean(request.purchaseAt || request.purchaseOrder || request.sapRequestNumber) || hasApprovedPurchasePending(request) },
     { key: "recebimento", label: "Recebimento", date: request.receiptAt, done: Boolean(request.receiptAt), active: getDisplayStatus(request) === "recebimento", requested: Boolean(request.receiptAt) || getDisplayStatus(request) === "recebimento" },
     { key: "retirado", label: "Retirada", date: request.withdrawnAt, done: request.status === "retirado", active: hasPickupPending(request), requested: Boolean(request.withdrawnAt) || hasPickupPending(request) },
+    { key: "cancelamento", label: "Cancelamento", date: request.cancellationApprovedAt || request.cancellationRejectedAt || request.cancellationRequestedAt, done: request.status === "cancelado" || Boolean(request.cancellationRejectedAt), active: getDisplayStatus(request) === "cancelamento", requested: Boolean(request.cancellationRequestedAt) || request.status === "cancelamento" || request.status === "cancelado" },
   ];
   return steps
     .map((step) => {
@@ -4419,6 +4762,8 @@ function formatDate(value) {
     minute: "2-digit",
   }).format(new Date(value));
 }
+
+
 
 
 

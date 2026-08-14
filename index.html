@@ -85,7 +85,7 @@
       <nav class="app-tabs" aria-label="Navegação principal">
         <button class="tab-button active" type="button" data-page="request">Pedido</button>
         <button class="tab-button" type="button" data-page="pending">Solicitações</button>
-        <button class="tab-button approval-tab" type="button" data-page="approval">Aprovação de compra</button>
+        <button class="tab-button approval-tab" type="button" data-page="approval" hidden>Aprovação de compra</button>
         <button class="tab-button purchase-tab" type="button" data-page="purchase">Compra</button>
         <button class="tab-button part-admin-tab" type="button" data-page="part-admin">Cadastro de Item</button>
         <button class="tab-button email-admin-tab" type="button" data-page="email-admin">E-mail</button>
@@ -482,6 +482,7 @@
           <ul class="parts-list"></ul>
           <p class="reason"></p>
           <p class="response"></p>
+          <div class="cancel-panel" hidden></div>
         </div>
         <div class="almox-actions">
           <div class="fulfillment-panel">

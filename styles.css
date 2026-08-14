@@ -2007,6 +2007,51 @@ dd {
   display: none;
 }
 
+.cancel-panel {
+  margin-top: 12px;
+}
+
+.cancel-box {
+  display: grid;
+  gap: 7px;
+  padding: 12px;
+  border: 1px solid color-mix(in srgb, var(--red) 24%, var(--line));
+  border-radius: 8px;
+  background: color-mix(in srgb, var(--red-soft) 58%, var(--panel));
+}
+
+.cancel-box.pending {
+  border-color: color-mix(in srgb, var(--amber) 42%, var(--line));
+  background: var(--amber-soft);
+}
+
+.cancel-box.done {
+  border-color: color-mix(in srgb, var(--red) 36%, var(--line));
+  background: color-mix(in srgb, var(--red-soft) 70%, var(--panel));
+}
+
+.cancel-box strong {
+  color: var(--text);
+}
+
+.cancel-box span,
+.cancel-box em {
+  color: var(--muted);
+  font-size: 0.9rem;
+  font-style: normal;
+}
+
+.cancel-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.cancel-actions .action {
+  width: auto;
+  min-width: 180px;
+}
+
 .almox-actions {
   display: grid;
   gap: 12px;
