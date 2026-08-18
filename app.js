@@ -109,6 +109,16 @@ let pendingSupabaseWrites = [];
 let preparedMailPopup = null;
 let isSubmittingRequest = false;
 
+window.addEventListener("error", (event) => {
+  setSupabaseStatus("error", "Erro no app");
+  console.error("Erro no ManuPeças:", event.error || event.message);
+});
+
+window.addEventListener("unhandledrejection", (event) => {
+  setSupabaseStatus("error", "Erro no app");
+  console.error("Falha não tratada no ManuPeças:", event.reason);
+});
+
 const body = document.body;
 const loginForm = document.querySelector("#login-form");
 const sessionLabel = document.querySelector("#session-label");
@@ -297,7 +307,7 @@ form.addEventListener("submit", async (event) => {
     if (!recentDuplicate) {
       requests = [request, ...requests];
       linkPartRegistrationsToRequest(request);
-      await saveRequests();
+      await saveRequestsSafely("nova solicitação");
     }
 
     const savedRequest = requests.find((item) => item.id === request.id) || requests.find((item) => isSameLogicalRequest(item, request)) || request;
@@ -519,35 +529,65 @@ async function startApp() {
   resetItemLines();
   await syncFromSupabase();
   if (repairBp0030VoltageRegulatorCdFulfillment()) {
-    await saveRequests();
+    await saveRequestsSafely("ajuste BP - 0030");
   }
   if (repairReceivedItemsStuckInReceipt()) {
-    await saveRequests();
+    await saveRequestsSafely("recebimentos pendentes");
   }
   if (repairReceiptReleasedItemsToPickup()) {
-    await saveRequests();
+    await saveRequestsSafely("retiradas liberadas");
   }
   if (repairInvalidSapTestRequests()) {
-    await saveRequests();
+    await saveRequestsSafely("testes SAP");
   }
   if (await repairWrongOilCapCode()) {
-    await saveRequests();
+    await saveRequestsSafely("cadastro de item");
     saveCustomParts();
     savePartRegistrations();
   }
   if (repairRejectedCancellationsStuckInReview()) {
-    await saveRequests();
+    await saveRequestsSafely("cancelamentos recusados");
   }
   if (await repairDuplicatePendingRequests()) {
-    await saveRequests();
+    await saveRequestsSafely("solicitações duplicadas");
   }
   if (migratePurchaseApprovalBacklog()) {
-    await saveRequests();
+    await saveRequestsSafely("pendências de compra");
   }
   mirrorRequestsToStructuredTables(requests);
   mirrorCustomPartsToStructuredTable(customParts);
-  setPage(currentPage);
-  render();
+  renderAppSafely();
+}
+
+function renderAppSafely() {
+  try {
+    setPage(currentPage);
+    render();
+  } catch (error) {
+    console.error("Erro ao carregar a tela principal. Tentando normalizar dados.", error);
+    setSupabaseStatus("error", "Erro ao carregar tela");
+    requests = (Array.isArray(requests) ? requests : []).map((request) => normalizeRequest(request)).filter(Boolean);
+    localStorage.setItem(REQUESTS_KEY, JSON.stringify(requests));
+
+    try {
+      setPage(currentPage);
+      render();
+    } catch (retryError) {
+      console.error("Não foi possível renderizar o app após normalização.", retryError);
+      showAppLoadError(retryError);
+    }
+  }
+}
+
+function showAppLoadError(error) {
+  body.dataset.view = "app";
+  if (!list) return;
+  list.innerHTML = `
+    <div class="empty-state">
+      Não foi possível carregar as solicitações agora. Atualize a página ou entre novamente.
+      <br><small>${escapeHtml(error?.message || "Erro interno")}</small>
+    </div>
+  `;
 }
 
 function syncRequestTarget() {
@@ -1868,6 +1908,18 @@ function saveRequests() {
   return upsertMergedRequestRows(requests).then(() => trackSupabaseWrite(mirrorRequestsToStructuredTables(requests), "solicitações estruturadas"));
 }
 
+async function saveRequestsSafely(context = "solicitações") {
+  try {
+    await saveRequests();
+    return true;
+  } catch (error) {
+    localStorage.setItem(REQUESTS_KEY, JSON.stringify(requests));
+    setSupabaseStatus("error", "Supabase: erro ao salvar");
+    console.warn(`Falha ao salvar ${context}. O app continuará com os dados locais.`, error);
+    return false;
+  }
+}
+
 function getStoredRequestsById() {
   try {
     return new Map(JSON.parse(localStorage.getItem(REQUESTS_KEY) || "[]").map((request) => [request.id, request]));
@@ -2789,7 +2841,7 @@ async function requestCancellation(id) {
     if (item.id === id) updatedRequest = item;
     return item;
   });
-  await saveRequests();
+  await saveRequestsSafely("solicitação de cancelamento");
   if (updatedRequest) openCancellationRequestEmailDraft(updatedRequest, "");
   render();
 }
@@ -2806,19 +2858,25 @@ async function approveCancellation(id) {
   }
   const now = new Date().toISOString();
   const userName = currentUser.name || currentUser.label || currentUser.email;
-  requests = requests.map((item) => item.id === id ? {
-    ...item,
-    status: "cancelado",
-    items: item.items.map((part) => ({ ...part, status: "cancelado", statusItem: "cancelado" })),
-    cancellationApprovedAt: now,
-    cancellationApprovedBy: userName,
-    cancellationApprovedByEmail: currentUser.email,
-    cancellationRejectedAt: "",
-    cancellationRejectedBy: "",
-    response: `Solicitação cancelada por aprovação do Admin ${userName}.`,
-  } : item);
+  let updatedRequest = null;
+  requests = requests.map((item) => {
+    if (item.id !== id) return item;
+    updatedRequest = {
+      ...item,
+      status: "cancelado",
+      items: item.items.map((part) => ({ ...part, status: "cancelado", statusItem: "cancelado" })),
+      cancellationApprovedAt: now,
+      cancellationApprovedBy: userName,
+      cancellationApprovedByEmail: currentUser.email,
+      cancellationRejectedAt: "",
+      cancellationRejectedBy: "",
+      response: `Solicitação cancelada por aprovação do Admin ${userName}.`,
+    };
+    return updatedRequest;
+  });
   render();
-  await saveRequests();
+  await saveRequestsSafely("aprovação de cancelamento");
+  if (updatedRequest) openCancellationDecisionEmailDraft(updatedRequest, true, "");
 }
 
 async function rejectCancellation(id) {
@@ -2834,18 +2892,24 @@ async function rejectCancellation(id) {
   const restoredStatus = resolveCancellationRestoredStatus(request);
   const now = new Date().toISOString();
   const userName = currentUser.name || currentUser.label || currentUser.email;
-  requests = requests.map((item) => item.id === id ? {
-    ...item,
-    status: restoredStatus,
-    cancellationApprovedAt: "",
-    cancellationApprovedBy: "",
-    cancellationApprovedByEmail: "",
-    cancellationRejectedAt: now,
-    cancellationRejectedBy: userName,
-    response: `Cancelamento recusado pelo Admin ${userName}. Solicitação mantida em aberto.`,
-  } : item);
+  let updatedRequest = null;
+  requests = requests.map((item) => {
+    if (item.id !== id) return item;
+    updatedRequest = {
+      ...item,
+      status: restoredStatus,
+      cancellationApprovedAt: "",
+      cancellationApprovedBy: "",
+      cancellationApprovedByEmail: "",
+      cancellationRejectedAt: now,
+      cancellationRejectedBy: userName,
+      response: `Cancelamento recusado pelo Admin ${userName}. Solicitação mantida em aberto.`,
+    };
+    return updatedRequest;
+  });
   render();
-  await saveRequests();
+  await saveRequestsSafely("recusa de cancelamento");
+  if (updatedRequest) openCancellationDecisionEmailDraft(updatedRequest, false, "");
 }
 
 function resolveCancellationRestoredStatus(request) {
@@ -2982,7 +3046,7 @@ async function saveFulfillment(id, card, shouldEmail) {
   updatedRequest.almoxByEmail = currentUser.email;
 
   requests = requests.map((item) => (item.id === id ? updatedRequest : item));
-  await saveRequests();
+  await saveRequestsSafely("atendimento do Almoxarifado");
 
   openAlmoxEmailDraft(updatedRequest, "");
 
@@ -3044,7 +3108,7 @@ async function saveCdFulfillment(id, card, shouldEmail) {
   };
 
   requests = requests.map((item) => (item.id === id ? updatedRequest : item));
-  await saveRequests();
+  await saveRequestsSafely("atendimento do CD");
 
   if (shouldEmail) {
     openCdEmailDraft(updatedRequest, "");
@@ -3086,7 +3150,7 @@ async function savePurchaseOrder(id, card, shouldEmail) {
   };
 
   requests = requests.map((item) => (item.id === id ? updatedRequest : item));
-  await saveRequests();
+  await saveRequestsSafely("pedido de compra");
 
   if (purchaseOrder) {
     openPurchaseEmailDraft(updatedRequest, "");
@@ -3117,7 +3181,7 @@ async function saveSapRequestNumber(id, card) {
     response: `Solicitação SAP registrada pelo Almoxarifado: ${sapRequestNumber}. Pendente atualização de Compras com pedido, previsão e acompanhamento.`,
   };
   requests = requests.map((item) => (item.id === id ? updatedRequest : item));
-  await saveRequests();
+  await saveRequestsSafely("solicitação SAP");
   openPurchaseEmailDraft(updatedRequest, "");
   render();
 }
@@ -3143,7 +3207,7 @@ async function registerPurchaseArrival(id, card) {
   };
 
   requests = requests.map((item) => (item.id === id ? updatedRequest : item));
-  await saveRequests();
+  await saveRequestsSafely("chegada de compra");
   openPurchaseArrivalEmailDraft(updatedRequest, "");
   render();
 }
@@ -3234,7 +3298,7 @@ async function confirmReceiptEntry(id, card) {
   };
 
   requests = requests.map((item) => (item.id === id ? updatedRequest : item));
-  await saveRequests();
+  await saveRequestsSafely("recebimento");
   openReceiptEmailDraft(updatedRequest, "");
   render();
 }
@@ -3286,7 +3350,7 @@ async function markWithdrawn(id, response, pickupData = {}) {
       withdrawnAt: allWithdrawn ? now : request.withdrawnAt || "",
     };
   });
-  await saveRequests();
+  await saveRequestsSafely("retirada");
   render();
 }
 
@@ -4154,7 +4218,7 @@ async function completePartRegistration(id, code, finalDescription, useExisting 
         }
       : item
   );
-  await saveRequests();
+  await saveRequestsSafely("cadastro de item");
   saveCustomParts();
   savePartRegistrations();
   renderPartRegistrations();
@@ -4696,7 +4760,7 @@ async function approvePurchase(id, mode = "all", selectedCodes = []) {
     };
     return approvedRequest;
   });
-  await saveRequests();
+  await saveRequestsSafely("aprovação de compra");
   if (approvedRequest) openApprovalEmailDraft(approvedRequest, "");
   render();
   renderApprovalQueue();
@@ -4825,7 +4889,7 @@ async function savePurchaseDelivery(id, purchaseOrder, deliveryDate, buyerNote =
     return updatedRequest;
   });
   if (updatedRequest) prepareMailPopup();
-  await saveRequests();
+  await saveRequestsSafely("atualização de compras");
   if (updatedRequest) {
     openPurchaseEmailDraft(updatedRequest, "");
   }
@@ -4945,8 +5009,9 @@ function getEmailRecipients(step, fallback = "") {
 }
 
 function prepareMailPopup() {
-  preparedMailPopup = null;
-  return null;
+  if (isPopupUsable(preparedMailPopup)) return preparedMailPopup;
+  preparedMailPopup = window.open("about:blank", "_blank");
+  return preparedMailPopup;
 }
 
 function isPopupUsable(popup) {
@@ -4960,20 +5025,39 @@ function isPopupUsable(popup) {
 function openMailDraft(to, subject, bodyText) {
   const recipients = typeof to === "object" && to !== null ? to : { to };
   flushSupabaseWrites();
-  refreshEmailSettingsCache();
+  const popup = isPopupUsable(preparedMailPopup) ? preparedMailPopup : window.open("about:blank", "_blank");
+  if (!popup) {
+    window.alert("O navegador bloqueou a abertura do Outlook Web. Libere pop-ups para o ManuPeças e tente novamente.");
+    return;
+  }
   preparedMailPopup = null;
-  openMailDraftInOutlookWeb(recipients, subject, bodyText);
+  refreshEmailSettingsCache().finally(() => {
+    openMailDraftInOutlookWeb(recipients, subject, bodyText, popup);
+  });
 }
 
-function refreshEmailSettingsCache() {
+async function refreshEmailSettingsCache() {
+  if (supabaseClient) {
+    try {
+      const remoteEmailSettings = await loadEmailSettingsFromSupabase();
+      if (remoteEmailSettings) {
+        emailSettings = normalizeEmailSettings(remoteEmailSettings);
+        localStorage.setItem(EMAIL_SETTINGS_KEY, JSON.stringify(emailSettings));
+        return emailSettings;
+      }
+    } catch (error) {
+      console.warn("Não foi possível atualizar as configurações de e-mail pelo Supabase.", error);
+    }
+  }
   try {
     emailSettings = normalizeEmailSettings(JSON.parse(localStorage.getItem(EMAIL_SETTINGS_KEY) || "{}"));
   } catch {
     emailSettings = normalizeEmailSettings(emailSettings);
   }
+  return emailSettings;
 }
 
-function openMailDraftInOutlookWeb(recipients, subject, bodyText) {
+function openMailDraftInOutlookWeb(recipients, subject, bodyText, popup = null) {
   let finalRecipients = recipients;
   if (recipients.step) {
     finalRecipients = getEmailRecipients(recipients.step, recipients.fallback || "");
@@ -4986,38 +5070,16 @@ function openMailDraftInOutlookWeb(recipients, subject, bodyText) {
   params.set("subject", cleanEmailText(subject || ""));
   params.set("body", cleanEmailText(bodyText || ""));
   const outlookUrl = `https://outlook.office.com/mail/0/deeplink/compose?${params.toString()}`;
-  const opened = window.open(outlookUrl, "_blank", "noopener,noreferrer");
-  if (!opened) {
-    window.alert("O navegador bloqueou a abertura do Outlook Web. Libere pop-ups para o ManuPeças e tente novamente.");
+  if (isPopupUsable(popup)) {
+    popup.location.href = outlookUrl;
+    return;
   }
+  const opened = window.open(outlookUrl, "_blank", "noopener,noreferrer");
+  if (!opened) window.alert("O navegador bloqueou a abertura do Outlook Web. Libere pop-ups para o ManuPeças e tente novamente.");
 }
 
 function cleanEmailText(value) {
-  return String(value || "")
-    .replaceAll("ÇÃO", "ÇÃO")
-    .replaceAll("ÇÕES", "ÇÕES")
-    .replaceAll("ção", "ção")
-    .replaceAll("ção", "ção")
-    .replaceAll("ções", "ções")
-    .replaceAll("Ç", "Ç")
-    .replaceAll("ç", "ç")
-    .replaceAll("ã", "ã")
-    .replaceAll("õ", "õ")
-    .replaceAll("á", "á")
-    .replaceAll("é", "é")
-    .replaceAll("í", "í")
-    .replaceAll("ó", "ó")
-    .replaceAll("ú", "ú")
-    .replaceAll("â", "â")
-    .replaceAll("ê", "ê")
-    .replaceAll("ô", "ô")
-    .replaceAll("À", "À")
-    .replaceAll("É", "É")
-    .replaceAll("Ó", "Ó")
-    .replaceAll("Ú", "Ú")
-    .replaceAll("º", "º")
-    .replaceAll("ª", "ª")
-    .replaceAll("", "");
+  return String(value || "").normalize("NFC");
 }
 
 function formatOutlookWebRecipients(value) {
@@ -5187,6 +5249,27 @@ function openCancellationRequestEmailDraft(request, to) {
     userLoginToEmail("bruno.medici"),
     userLoginToEmail("caio.silveira"),
     requestedByEmail,
+  ].filter(Boolean).join("; ");
+  openMailDraft({ step: "cancellation", fallback: to || fallback }, subject, bodyText);
+}
+
+function openCancellationDecisionEmailDraft(request, approved, to) {
+  const subject = buildEmailSubject(request, approved ? "Cancelamento aprovado" : "Cancelamento recusado");
+  const requestedByEmail = userLoginToEmail(request.cancellationRequestedByEmail || request.requestedByEmail || request.requestedBy);
+  const decisionUser = approved ? request.cancellationApprovedBy : request.cancellationRejectedBy;
+  const decisionDate = approved ? request.cancellationApprovedAt : request.cancellationRejectedAt;
+  const bodyText = buildEmailBody(approved ? "Cancelamento Aprovado" : "Cancelamento Recusado", approved
+    ? `O cancelamento da solicitação ${request.id} foi aprovado.`
+    : `O cancelamento da solicitação ${request.id} foi recusado. A solicitação voltou para a etapa correta do fluxo.`, [
+    { title: "Dados da Solicitação", content: `Solicitação: ${request.id}\nAplicação: ${getRequestTargetLabel(request)}\nPrioridade: ${request.priority}\nSolicitante: ${request.requestedBy || "-"}\nManutentor: ${request.maintainer || "-"}\nStatus atual: ${getRequestStatusText(request)}` },
+    { title: "Decisão", content: `Decisão: ${approved ? "Cancelamento aprovado" : "Cancelamento recusado"}\nResponsável: ${decisionUser || "Admin"}\nData: ${formatDateOrDash(decisionDate)}\nMotivo solicitado: ${request.cancellationReason || "Sem motivo informado."}` },
+    { title: "Peças", content: formatEmailItems(request.items, (item) => item.quantity) },
+  ]);
+  const fallback = [
+    requestedByEmail,
+    userLoginToEmail("erik.barreto"),
+    userLoginToEmail("bruno.medici"),
+    userLoginToEmail("caio.silveira"),
   ].filter(Boolean).join("; ");
   openMailDraft({ step: "cancellation", fallback: to || fallback }, subject, bodyText);
 }
