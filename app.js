@@ -282,9 +282,6 @@ form.addEventListener("submit", async (event) => {
       return;
     }
 
-    prepareMailPopup();
-    await syncFromSupabase();
-
     const draftRequest = {
       id: "",
       bus,
@@ -302,12 +299,12 @@ form.addEventListener("submit", async (event) => {
       almoxByEmail: "",
     };
     const recentDuplicate = findRecentDuplicateRequest(draftRequest);
-    const request = recentDuplicate || { ...draftRequest, id: await makeCode() };
+    const request = recentDuplicate || { ...draftRequest, id: makeLocalRequestCode() };
 
     if (!recentDuplicate) {
       requests = [request, ...requests];
       linkPartRegistrationsToRequest(request);
-      await saveRequestsSafely("nova solicitação");
+      localStorage.setItem(REQUESTS_KEY, JSON.stringify(requests));
     }
 
     const savedRequest = requests.find((item) => item.id === request.id) || requests.find((item) => isSameLogicalRequest(item, request)) || request;
@@ -317,12 +314,20 @@ form.addEventListener("submit", async (event) => {
     }
 
     if (!recentDuplicate) {
-      if (savedRequest.status === "cadastro") {
-        openPartRegistrationEmailDraft(savedRequest);
-      } else {
-        openEmailDraft(savedRequest, "");
+      try {
+        setTimeout(() => {
+          if (savedRequest.status === "cadastro") {
+            openPartRegistrationEmailDraft(savedRequest);
+          } else {
+            openEmailDraft(savedRequest, "");
+          }
+        }, 100);
+      } catch (error) {
+        closePreparedMailPopup();
+        console.warn("Solicitação registrada, mas não foi possível abrir o e-mail.", error);
       }
     } else {
+      closePreparedMailPopup();
       window.alert(`Solicitação duplicada bloqueada. A solicitação ${recentDuplicate.id} já foi registrada.`);
     }
 
@@ -333,6 +338,18 @@ form.addEventListener("submit", async (event) => {
     syncFilterButtons();
     setPage("pending");
     render();
+    if (!recentDuplicate) {
+      saveRequestsSafely("nova solicitação")
+        .then(() => syncFromSupabase())
+        .then(() => renderAppSafely())
+        .catch((error) => console.warn("Solicitação registrada localmente, mas a sincronização posterior falhou.", error));
+    }
+  } catch (error) {
+    closePreparedMailPopup();
+    setSupabaseStatus("error", "Erro ao registrar solicitação");
+    console.error("Erro ao registrar solicitação:", error);
+    const detail = error?.message || String(error || "erro não identificado");
+    window.alert(`Não foi possível registrar a solicitação.\n\nErro: ${detail}`);
   } finally {
     isSubmittingRequest = false;
     if (submitButton) {
@@ -1518,6 +1535,10 @@ function isSameLogicalRequest(localRequest, remoteRequest) {
     && getRequestItemSignature(localRequest) === getRequestItemSignature(remoteRequest);
 }
 
+function normalizeCode(value) {
+  return String(value || "").trim().replace(/\s+/g, "").toUpperCase();
+}
+
 function getRequestItemSignature(request) {
   return (request.items || [])
     .map((item) => [
@@ -1574,7 +1595,7 @@ function findRecentDuplicateRequest(draftRequest) {
   return requests.find((request) =>
     isRequestEarlyStage(request)
     && getRequestDuplicateSignature(request) === signature
-    && areRequestsCreatedClose(request, draftRequest, 10)
+    && areRequestsCreatedClose(request, draftRequest, 0.5)
   );
 }
 
@@ -2346,6 +2367,10 @@ async function makeCode() {
     }
   }
   return makeNextRequestCode(usedIds);
+}
+
+function makeLocalRequestCode() {
+  return makeNextRequestCode(new Set(requests.map((request) => request.id).filter(Boolean)));
 }
 
 function makeNextRequestCode(usedIds) {
@@ -5025,6 +5050,21 @@ function prepareMailPopup() {
   return preparedMailPopup;
 }
 
+function closePreparedMailPopup() {
+  if (!isPopupUsable(preparedMailPopup)) {
+    preparedMailPopup = null;
+    return;
+  }
+  try {
+    if (preparedMailPopup.location.href === "about:blank") {
+      preparedMailPopup.close();
+    }
+  } catch {
+    preparedMailPopup.close();
+  }
+  preparedMailPopup = null;
+}
+
 function isPopupUsable(popup) {
   try {
     return Boolean(popup && !popup.closed);
@@ -5036,11 +5076,7 @@ function isPopupUsable(popup) {
 function openMailDraft(to, subject, bodyText) {
   const recipients = typeof to === "object" && to !== null ? to : { to };
   flushSupabaseWrites();
-  const popup = isPopupUsable(preparedMailPopup) ? preparedMailPopup : window.open("about:blank", "_blank");
-  if (!popup) {
-    window.alert("O navegador bloqueou a abertura do Outlook Web. Libere pop-ups para o ManuPeças e tente novamente.");
-    return;
-  }
+  const popup = isPopupUsable(preparedMailPopup) ? preparedMailPopup : null;
   preparedMailPopup = null;
   refreshEmailSettingsCache().finally(() => {
     openMailDraftInOutlookWeb(recipients, subject, bodyText, popup);
@@ -5073,14 +5109,14 @@ function openMailDraftInOutlookWeb(recipients, subject, bodyText, popup = null) 
   if (recipients.step) {
     finalRecipients = getEmailRecipients(recipients.step, recipients.fallback || "");
   }
-  const params = new URLSearchParams();
   const recipient = formatOutlookWebRecipients(finalRecipients.to);
   const cc = formatOutlookWebRecipients(finalRecipients.cc);
-  if (recipient) params.set("to", recipient);
-  if (cc) params.set("cc", cc);
-  params.set("subject", cleanEmailText(subject || ""));
-  params.set("body", cleanEmailText(bodyText || ""));
-  const outlookUrl = `https://outlook.office.com/mail/0/deeplink/compose?${params.toString()}`;
+  const params = [];
+  if (recipient) params.push(`to=${encodeMailParam(recipient)}`);
+  if (cc) params.push(`cc=${encodeMailParam(cc)}`);
+  params.push(`subject=${encodeMailParam(subject || "")}`);
+  params.push(`body=${encodeMailParam(bodyText || "")}`);
+  const outlookUrl = `https://outlook.office.com/mail/deeplink/compose?${params.join("&")}`;
   if (isPopupUsable(popup)) {
     popup.location.href = outlookUrl;
     return;
@@ -5093,12 +5129,17 @@ function cleanEmailText(value) {
   return String(value || "").normalize("NFC");
 }
 
+function encodeMailParam(value) {
+  return encodeURIComponent(cleanEmailText(value));
+}
+
 function formatOutlookWebRecipients(value) {
   return String(value || "")
     .split(/[;,]/)
-    .map((item) => item.trim())
+    .map((item) => userLoginToEmail(item.trim()))
     .filter(Boolean)
-    .join(",");
+    .filter((email, index, list) => list.indexOf(email) === index)
+    .join(";");
 }
 
 function buildEmailSubject(request, step) {
