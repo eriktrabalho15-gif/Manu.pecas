@@ -115,7 +115,7 @@ window.addEventListener("error", (event) => {
 });
 
 window.addEventListener("unhandledrejection", (event) => {
-  setSupabaseStatus("error", "Erro no app");
+  setSupabaseStatus("error", "Supabase: erro de sincronização");
   console.error("Falha não tratada no ManuPeças:", event.reason);
 });
 
@@ -554,9 +554,26 @@ async function startApp() {
   if (migratePurchaseApprovalBacklog()) {
     await saveRequestsSafely("pendências de compra");
   }
-  mirrorRequestsToStructuredTables(requests);
-  mirrorCustomPartsToStructuredTable(customParts);
+  syncStructuredTablesSafely("abertura do app");
   renderAppSafely();
+}
+
+function syncStructuredTablesSafely(context = "sincronização") {
+  const requestMirror = mirrorRequestsToStructuredTables(requests);
+  if (requestMirror && typeof requestMirror.catch === "function") {
+    trackSupabaseWrite(requestMirror.catch((error) => {
+      console.warn(`Falha ao sincronizar solicitações estruturadas em ${context}.`, error);
+      return { error };
+    }), "solicitações estruturadas");
+  }
+
+  const partsMirror = mirrorCustomPartsToStructuredTable(customParts);
+  if (partsMirror && typeof partsMirror.catch === "function") {
+    trackSupabaseWrite(partsMirror.catch((error) => {
+      console.warn(`Falha ao sincronizar itens em ${context}.`, error);
+      return { error };
+    }), "itens");
+  }
 }
 
 function renderAppSafely() {
