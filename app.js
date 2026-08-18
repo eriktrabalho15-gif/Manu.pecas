@@ -559,21 +559,13 @@ async function startApp() {
 }
 
 function syncStructuredTablesSafely(context = "sincronização") {
-  const requestMirror = mirrorRequestsToStructuredTables(requests);
-  if (requestMirror && typeof requestMirror.catch === "function") {
-    trackSupabaseWrite(requestMirror.catch((error) => {
-      console.warn(`Falha ao sincronizar solicitações estruturadas em ${context}.`, error);
-      return { error };
-    }), "solicitações estruturadas");
-  }
+  Promise.resolve(mirrorRequestsToStructuredTables(requests)).catch((error) => {
+    warnOptionalSupabaseMirror(`Falha ao sincronizar solicitações estruturadas em ${context}`, error);
+  });
 
-  const partsMirror = mirrorCustomPartsToStructuredTable(customParts);
-  if (partsMirror && typeof partsMirror.catch === "function") {
-    trackSupabaseWrite(partsMirror.catch((error) => {
-      console.warn(`Falha ao sincronizar itens em ${context}.`, error);
-      return { error };
-    }), "itens");
-  }
+  Promise.resolve(mirrorCustomPartsToStructuredTable(customParts)).catch((error) => {
+    warnOptionalSupabaseMirror(`Falha ao sincronizar itens em ${context}`, error);
+  });
 }
 
 function renderAppSafely() {
@@ -1308,6 +1300,11 @@ function trackSupabaseWrite(promise, label = "dados") {
   return tracked;
 }
 
+function warnOptionalSupabaseMirror(context, error) {
+  const detail = error?.message || error || "sem detalhe retornado";
+  console.warn(`${context}. Espelho opcional não atualizado:`, detail);
+}
+
 async function flushSupabaseWrites() {
   if (pendingSupabaseWrites.length === 0) return;
   await Promise.allSettled([...pendingSupabaseWrites]);
@@ -1686,15 +1683,13 @@ async function replaceOperationalRows(table, requestNumbers, rows) {
     .delete()
     .in("solicitacao_numero", requestNumbers);
   if (deleteError) {
-    setSupabaseStatus("error", `Supabase: erro em ${table}`);
-    console.warn(`Erro ao limpar ${table}:`, deleteError.message);
+    warnOptionalSupabaseMirror(`Erro ao limpar ${table}`, deleteError);
     return false;
   }
   if (rows.length === 0) return true;
   const { error: insertError } = await supabaseClient.from(table).insert(rows);
   if (insertError) {
-    setSupabaseStatus("error", `Supabase: erro em ${table}`);
-    console.warn(`Erro ao salvar ${table}:`, insertError.message);
+    warnOptionalSupabaseMirror(`Erro ao salvar ${table}`, insertError);
     return false;
   }
   return true;
@@ -1811,8 +1806,7 @@ async function mirrorRequestsToStructuredTables(rows) {
       .upsert(requestPayload, { onConflict: "numero" });
 
     if (requestError) {
-      setSupabaseStatus("error", "Supabase: erro em solicitações");
-      console.warn("Erro ao salvar solicitações estruturadas:", requestError.message);
+      warnOptionalSupabaseMirror("Erro ao salvar solicitações estruturadas", requestError);
       return;
     }
 
@@ -1823,16 +1817,14 @@ async function mirrorRequestsToStructuredTables(rows) {
       .in("numero", requestNumbers);
 
     if (selectError) {
-      setSupabaseStatus("error", "Supabase: erro ao buscar solicitações");
-      console.warn("Erro ao buscar solicitações estruturadas:", selectError.message);
+      warnOptionalSupabaseMirror("Erro ao buscar solicitações estruturadas", selectError);
       return;
     }
 
     const idByNumber = new Map((savedRequests || []).map((row) => [row.numero, row.id]));
     const requestIds = Array.from(idByNumber.values()).filter(Boolean);
     if (requestIds.length === 0) {
-      setSupabaseStatus("error", "Supabase: solicitação sem ID");
-      console.warn("Solicitações estruturadas não retornaram ID para gravar itens.");
+      warnOptionalSupabaseMirror("Solicitações estruturadas não retornaram ID para gravar itens", null);
       return;
     }
 
@@ -1841,8 +1833,7 @@ async function mirrorRequestsToStructuredTables(rows) {
       .delete()
       .in("solicitacao_id", requestIds);
     if (deleteError) {
-      setSupabaseStatus("error", "Supabase: erro ao atualizar itens");
-      console.warn("Erro ao atualizar itens estruturados:", deleteError.message);
+      warnOptionalSupabaseMirror("Erro ao atualizar itens estruturados", deleteError);
       return;
     }
 
@@ -1868,16 +1859,14 @@ async function mirrorRequestsToStructuredTables(rows) {
     if (itemPayload.length > 0) {
       const { error: itemError } = await supabaseClient.from("solicitacao_itens").insert(itemPayload);
       if (itemError) {
-        setSupabaseStatus("error", "Supabase: erro em itens");
-        console.warn("Erro ao salvar itens estruturados:", itemError.message);
+        warnOptionalSupabaseMirror("Erro ao salvar itens estruturados", itemError);
         return;
       }
     }
 
     await mirrorOperationalTables(normalizedRows);
   } catch (error) {
-    setSupabaseStatus("error", "Supabase: erro no espelho");
-    console.warn("Não foi possível espelhar solicitações estruturadas.", error);
+    warnOptionalSupabaseMirror("Não foi possível espelhar solicitações estruturadas", error);
   }
 }
 
@@ -1893,7 +1882,10 @@ function mirrorCustomPartsToStructuredTable(parts) {
     }))
     .filter((part) => part.codigo_sap && part.descricao);
   if (payload.length === 0) return;
-  return trackSupabaseWrite(supabaseClient.from("itens").upsert(payload, { onConflict: "codigo_sap" }), "itens");
+  return supabaseClient.from("itens").upsert(payload, { onConflict: "codigo_sap" }).then(({ error }) => {
+    if (error) warnOptionalSupabaseMirror("Erro ao sincronizar itens estruturados", error);
+    return { error };
+  });
 }
 
 function replaceSupabaseDeletedUsers() {
@@ -1922,7 +1914,9 @@ function saveRequests() {
     return { ...request, updatedAt: changed ? now : request.updatedAt || previous?.updatedAt || now };
   });
   localStorage.setItem(REQUESTS_KEY, JSON.stringify(requests));
-  return upsertMergedRequestRows(requests).then(() => trackSupabaseWrite(mirrorRequestsToStructuredTables(requests), "solicitações estruturadas"));
+  return upsertMergedRequestRows(requests).then(() => {
+    syncStructuredTablesSafely("salvamento de solicitações");
+  });
 }
 
 async function saveRequestsSafely(context = "solicitações") {
