@@ -6,7 +6,7 @@
     <title>ManuPeças | JTP Transportes</title>
     <link rel="icon" href="./favicon.ico" sizes="any" />
     <link rel="apple-touch-icon" href="./favicon.png" />
-    <link rel="stylesheet" href="./styles.css?v=20260818-cancelamento-filtros" />
+    <link rel="stylesheet" href="./styles.css?v=20260818-filtro-carro" />
   </head>
   <body data-view="login">
     <section class="login-screen" id="login-screen">
@@ -204,11 +204,15 @@
           <div class="queue-search" aria-label="Filtros da fila">
             <label>
               <span>Filtrar por solicitação</span>
-              <input id="queue-request-filter" type="search" placeholder="Ex.: BP - 0045" autocomplete="off" />
+              <input id="queue-request-filter" name="manupecas-filtro-solicitacao" type="search" placeholder="Ex.: BP - 0045" autocomplete="off" autocapitalize="none" spellcheck="false" />
             </label>
             <label>
               <span>Filtrar por peça</span>
-              <input id="queue-part-filter" type="search" placeholder="Código ou descrição" autocomplete="off" />
+              <input id="queue-part-filter" name="manupecas-filtro-peca" type="search" placeholder="Código ou descrição" autocomplete="off" autocapitalize="none" spellcheck="false" />
+            </label>
+            <label>
+              <span>Filtrar por carro</span>
+              <input id="queue-car-filter" name="manupecas-filtro-carro" type="search" placeholder="Prefixo ou frota" autocomplete="off" autocapitalize="none" spellcheck="false" />
             </label>
           </div>
 
@@ -578,7 +582,7 @@
         SUPABASE_PUBLIC_KEY
       );
     </script>
-    <script src="./app.js?v=20260818-outlook-cc-workaround"></script>
+    <script src="./app.js?v=20260818-email-popup-todos"></script>
   </body>
 </html>
 

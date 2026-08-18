@@ -157,6 +157,7 @@ const queueTitle = document.querySelector("#queue-title");
 const queueSubtitle = document.querySelector("#queue-subtitle");
 const queueRequestFilter = document.querySelector("#queue-request-filter");
 const queuePartFilter = document.querySelector("#queue-part-filter");
+const queueCarFilter = document.querySelector("#queue-car-filter");
 const managerPendingItems = document.querySelector("#manager-pending-items");
 const managerBuyItems = document.querySelector("#manager-buy-items");
 const managerServiceRate = document.querySelector("#manager-service-rate");
@@ -210,6 +211,7 @@ logoutButton.addEventListener("click", () => {
   currentUser = null;
   localStorage.removeItem(SESSION_KEY);
   sessionStorage.removeItem(SESSION_KEY);
+  clearQueueFilters();
   body.dataset.view = "login";
   body.dataset.role = "";
 });
@@ -310,6 +312,9 @@ form.addEventListener("submit", async (event) => {
     }
 
     const savedRequest = requests.find((item) => item.id === request.id) || requests.find((item) => isSameLogicalRequest(item, request)) || request;
+    if (!recentDuplicate) {
+      prepareMailPopup();
+    }
     if (savedRequest.id !== request.id) {
       linkPartRegistrationsToRequest(savedRequest);
       await savePartRegistrations();
@@ -317,13 +322,11 @@ form.addEventListener("submit", async (event) => {
 
     if (!recentDuplicate) {
       try {
-        setTimeout(() => {
-          if (savedRequest.status === "cadastro") {
-            openPartRegistrationEmailDraft(savedRequest);
-          } else {
-            openEmailDraft(savedRequest, "");
-          }
-        }, 100);
+        if (savedRequest.status === "cadastro") {
+          openPartRegistrationEmailDraft(savedRequest);
+        } else {
+          openEmailDraft(savedRequest, "");
+        }
       } catch (error) {
         closePreparedMailPopup();
         console.warn("Solicitação registrada, mas não foi possível abrir o e-mail.", error);
@@ -389,6 +392,7 @@ filterButtons.forEach((button) => {
 
 queueRequestFilter?.addEventListener("input", () => render());
 queuePartFilter?.addEventListener("input", () => render());
+queueCarFilter?.addEventListener("input", () => render());
 historyFilter.addEventListener("input", () => renderHistory());
 historyPrefixFilter.addEventListener("input", () => renderHistory());
 historyDateFrom.addEventListener("change", () => renderHistory());
@@ -541,6 +545,7 @@ if (currentUser) {
 }
 
 async function startApp() {
+  clearQueueFilters();
   body.dataset.view = "app";
   body.dataset.role = currentUser.role;
   sessionLabel.textContent = `${currentUser.label} | ${currentUser.email}`;
@@ -2487,11 +2492,21 @@ function render() {
 function matchesQueueFilters(request) {
   const requestTerm = normalizeSearchCompact(queueRequestFilter?.value || "");
   const partTerm = normalizeSearchText(queuePartFilter?.value || "");
+  const carTerm = normalizeSearchCompact(queueCarFilter?.value || "");
 
   if (requestTerm) {
     const requestId = normalizeSearchCompact(request.id || "");
     const requestNumber = normalizeSearchCompact(String(request.id || "").replace(/^bp-?/i, ""));
     if (!requestId.includes(requestTerm) && !requestNumber.includes(requestTerm)) return false;
+  }
+
+  if (carTerm) {
+    const targetText = normalizeSearchCompact([
+      request.bus,
+      request.targetType,
+      getRequestTargetLabel(request),
+    ].filter(Boolean).join(" "));
+    if (!targetText.includes(carTerm)) return false;
   }
 
   if (partTerm) {
@@ -2502,6 +2517,12 @@ function matchesQueueFilters(request) {
   }
 
   return true;
+}
+
+function clearQueueFilters() {
+  [queueRequestFilter, queuePartFilter, queueCarFilter].forEach((input) => {
+    if (input) input.value = "";
+  });
 }
 
 function createCard(request) {
@@ -2928,6 +2949,7 @@ async function approveCancellation(id) {
     window.alert("Apenas usuários Admin podem aprovar cancelamento.");
     return;
   }
+  prepareMailPopup();
   const now = new Date().toISOString();
   const userName = currentUser.name || currentUser.label || currentUser.email;
   let updatedRequest = null;
@@ -2961,6 +2983,7 @@ async function rejectCancellation(id) {
     window.alert("Apenas usuários Admin podem recusar cancelamento.");
     return;
   }
+  prepareMailPopup();
   const restoredStatus = resolveCancellationRestoredStatus(request);
   const now = new Date().toISOString();
   const userName = currentUser.name || currentUser.label || currentUser.email;
@@ -5084,6 +5107,14 @@ function getEmailRecipients(step, fallback = "") {
 function prepareMailPopup() {
   if (isPopupUsable(preparedMailPopup)) return preparedMailPopup;
   preparedMailPopup = window.open("about:blank", "_blank");
+  if (isPopupUsable(preparedMailPopup)) {
+    try {
+      preparedMailPopup.document.write("<!doctype html><title>ManuPeças</title><body style=\"font-family:Arial,sans-serif;padding:24px;color:#10201a\"><h2>Abrindo Outlook Web...</h2><p>Aguarde enquanto o e-mail automático é preparado.</p></body>");
+      preparedMailPopup.document.close();
+    } catch {
+      // A aba pode ficar inacessível dependendo da política do navegador.
+    }
+  }
   return preparedMailPopup;
 }
 
@@ -5113,7 +5144,7 @@ function isPopupUsable(popup) {
 function openMailDraft(to, subject, bodyText) {
   const recipients = typeof to === "object" && to !== null ? to : { to };
   flushSupabaseWrites();
-  const popup = isPopupUsable(preparedMailPopup) ? preparedMailPopup : null;
+  const popup = isPopupUsable(preparedMailPopup) ? preparedMailPopup : prepareMailPopup();
   preparedMailPopup = null;
   refreshEmailSettingsCache().finally(() => {
     openMailDraftInOutlookWeb(recipients, subject, bodyText, popup);
