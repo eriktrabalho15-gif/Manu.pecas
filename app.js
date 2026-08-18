@@ -155,6 +155,8 @@ const filterButtons = document.querySelectorAll(".filter-button");
 const queueEyebrow = document.querySelector("#queue-eyebrow");
 const queueTitle = document.querySelector("#queue-title");
 const queueSubtitle = document.querySelector("#queue-subtitle");
+const queueRequestFilter = document.querySelector("#queue-request-filter");
+const queuePartFilter = document.querySelector("#queue-part-filter");
 const managerPendingItems = document.querySelector("#manager-pending-items");
 const managerBuyItems = document.querySelector("#manager-buy-items");
 const managerServiceRate = document.querySelector("#manager-service-rate");
@@ -385,6 +387,8 @@ filterButtons.forEach((button) => {
   });
 });
 
+queueRequestFilter?.addEventListener("input", () => render());
+queuePartFilter?.addEventListener("input", () => render());
 historyFilter.addEventListener("input", () => renderHistory());
 historyPrefixFilter.addEventListener("input", () => renderHistory());
 historyDateFrom.addEventListener("change", () => renderHistory());
@@ -1539,6 +1543,18 @@ function normalizeCode(value) {
   return String(value || "").trim().replace(/\s+/g, "").toUpperCase();
 }
 
+function normalizeSearchText(value) {
+  return String(value || "")
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .toLowerCase()
+    .trim();
+}
+
+function normalizeSearchCompact(value) {
+  return normalizeSearchText(value).replace(/\s+/g, "");
+}
+
 function getRequestItemSignature(request) {
   return (request.items || [])
     .map((item) => [
@@ -2455,7 +2471,7 @@ function render() {
     if (currentFilter === "solicitacao") return request.status === "solicitacao" || request.status === "cadastro";
     if (currentFilter === "compra") return isPurchaseQueuePending(request);
     return request.status === currentFilter;
-  });
+  }).filter(matchesQueueFilters);
 
   if (visible.length === 0) {
     const empty = document.createElement("div");
@@ -2466,6 +2482,26 @@ function render() {
   }
 
   visible.forEach((request) => list.append(createCard(request)));
+}
+
+function matchesQueueFilters(request) {
+  const requestTerm = normalizeSearchCompact(queueRequestFilter?.value || "");
+  const partTerm = normalizeSearchText(queuePartFilter?.value || "");
+
+  if (requestTerm) {
+    const requestId = normalizeSearchCompact(request.id || "");
+    const requestNumber = normalizeSearchCompact(String(request.id || "").replace(/^bp-?/i, ""));
+    if (!requestId.includes(requestTerm) && !requestNumber.includes(requestTerm)) return false;
+  }
+
+  if (partTerm) {
+    const itemText = normalizeSearchText((request.items || [])
+      .map((item) => `${item.code || ""} ${item.description || ""}`)
+      .join(" "));
+    if (!itemText.includes(partTerm)) return false;
+  }
+
+  return true;
 }
 
 function createCard(request) {
@@ -4441,6 +4477,7 @@ function createHistorySlaMap(request) {
 
 function createHistoryTimeline(request) {
   const displayStatus = getDisplayStatus(request);
+  const isCanceled = displayStatus === "cancelado" || request.status === "cancelado" || Boolean(request.cancellationApprovedAt);
   const almoxQty = getAlmoxServedQtySum(request);
   const cdQty = getCdServedQtySum(request);
   const purchaseQty = getPurchaseServedQtySum(request);
@@ -4459,7 +4496,7 @@ function createHistoryTimeline(request) {
       owner: request.almoxBy || "-",
       date: request.attendedAt,
       sla: getAreaSla(request, "almox"),
-      state: request.attendedAt ? "done" : displayStatus === "solicitacao" ? "active" : "idle",
+      state: request.attendedAt ? "done" : !isCanceled && displayStatus === "solicitacao" ? "active" : "idle",
     },
     {
       label: "CD",
@@ -4467,7 +4504,7 @@ function createHistoryTimeline(request) {
       owner: request.cdBy || "-",
       date: request.cdAt,
       sla: getAreaSla(request, "cd"),
-      state: request.cdAt ? "done" : displayStatus === "cd" ? "active" : "idle",
+      state: request.cdAt ? "done" : !isCanceled && displayStatus === "cd" ? "active" : "idle",
     },
     {
       label: "Aprovação",
@@ -4475,7 +4512,7 @@ function createHistoryTimeline(request) {
       owner: request.purchaseApprovedBy || "Gerente",
       date: request.purchaseAt || request.purchaseApprovedAt,
       sla: getAreaSla(request, "aprovacao"),
-      state: request.purchaseAt || request.status === "reprovado" ? "done" : displayStatus === "aprovacao" ? "active" : "idle",
+      state: request.purchaseAt || request.status === "reprovado" ? "done" : !isCanceled && displayStatus === "aprovacao" ? "active" : "idle",
     },
     {
       label: "Compra",
@@ -4495,7 +4532,7 @@ function createHistoryTimeline(request) {
       owner: request.purchaseOrder ? `Pedido ${request.purchaseOrder}` : request.sapRequestNumber ? `SAP ${request.sapRequestNumber}` : "-",
       date: request.purchaseAt,
       sla: getAreaSla(request, "compra"),
-      state: request.purchaseAt ? hasPurchaseReceipt(request) ? "done" : "active" : "idle",
+      state: request.purchaseAt ? hasPurchaseReceipt(request) ? "done" : isCanceled ? "idle" : "active" : "idle",
     },
     {
       label: "Recebimento",
@@ -4503,7 +4540,7 @@ function createHistoryTimeline(request) {
       owner: request.receiptBy || request.almoxBy || "-",
       date: request.receiptAt,
       sla: getAreaSla(request, "recebimento"),
-      state: request.receiptAt ? "done" : displayStatus === "recebimento" ? "active" : "idle",
+      state: request.receiptAt ? "done" : !isCanceled && displayStatus === "recebimento" ? "active" : "idle",
     },
     {
       label: "Retirada",
@@ -4511,7 +4548,7 @@ function createHistoryTimeline(request) {
       owner: request.withdrawnAt || request.pickupAt ? `${request.withdrawnPerson || request.requestedBy || "-"}${request.praxioRequisition ? ` | Praxio ${request.praxioRequisition}` : ""}` : "-",
       date: request.withdrawnAt || request.pickupAt,
       sla: request.withdrawnAt || request.pickupAt ? formatDuration(request.createdAt, request.withdrawnAt || request.pickupAt) : "-",
-      state: request.withdrawnAt ? "done" : hasPickupPending(request) ? "active" : request.pickupAt ? "done" : "idle",
+      state: request.withdrawnAt ? "done" : !isCanceled && hasPickupPending(request) ? "active" : request.pickupAt ? "done" : "idle",
     },
     {
       label: "Cancelamento",
@@ -5111,9 +5148,11 @@ function openMailDraftInOutlookWeb(recipients, subject, bodyText, popup = null) 
   }
   const recipient = formatOutlookWebRecipients(finalRecipients.to);
   const cc = formatOutlookWebRecipients(finalRecipients.cc);
+  console.info("ManuPeças e-mail", { etapa: finalRecipients.step || "manual", para: recipient, copia: cc });
   const params = [];
-  if (recipient) params.push(`to=${encodeMailParam(recipient)}`);
-  if (cc) params.push(`cc=${encodeMailParam(cc)}`);
+  const toWithCc = recipient && cc ? `${recipient}?cc=${cc}` : recipient;
+  if (toWithCc) params.push(`to=${encodeMailParam(toWithCc)}`);
+  if (!recipient && cc) params.push(`cc=${encodeMailParam(cc)}`);
   params.push(`subject=${encodeMailParam(subject || "")}`);
   params.push(`body=${encodeMailParam(bodyText || "")}`);
   const outlookUrl = `https://outlook.office.com/mail/deeplink/compose?${params.join("&")}`;
@@ -5139,7 +5178,7 @@ function formatOutlookWebRecipients(value) {
     .map((item) => userLoginToEmail(item.trim()))
     .filter(Boolean)
     .filter((email, index, list) => list.indexOf(email) === index)
-    .join(";");
+    .join(",");
 }
 
 function buildEmailSubject(request, step) {
@@ -5328,16 +5367,18 @@ function openCancellationDecisionEmailDraft(request, approved, to) {
 
 function createProcessMap(request) {
   const registrationInfo = getRegistrationStepInfo(request);
+  const displayStatus = getDisplayStatus(request);
+  const isCanceled = displayStatus === "cancelado" || request.status === "cancelado" || Boolean(request.cancellationApprovedAt);
   const steps = [
     { key: "solicitacao", label: "Solicitação", date: request.createdAt, done: Boolean(request.createdAt), active: false, requested: true },
-    { key: "cadastro", label: "Cadastro SAP", date: registrationInfo.date, done: registrationInfo.done, active: request.status === "cadastro", requested: registrationInfo.requested },
-    { key: "atendimento", label: "Almoxarifado", date: request.attendedAt, done: Boolean(request.attendedAt), active: request.status === "solicitacao", requested: true },
-    { key: "cd", label: "CD", date: request.cdAt, done: Boolean(request.cdAt), active: request.status === "cd", requested: Boolean(request.cdAt) || request.status === "cd" || request.items.some((item) => getCdPendingQty(item) > 0 || Number(item.cdQty) > 0) },
-    { key: "aprovacao", label: "Aprovação", date: request.purchaseApprovedAt, done: Boolean(request.purchaseApprovedAt) || request.status === "reprovado", active: hasPurchaseApprovalPending(request), requested: Boolean(request.purchaseApprovalRequestedAt || request.purchaseApprovedAt) || hasPurchaseApprovalPending(request) },
-    { key: "compra", label: "Compra", date: request.purchaseAt, done: Boolean(hasPurchaseReceipt(request)), active: getDisplayStatus(request) === "compra" || (getDisplayStatus(request) === "recebimento" && isPurchaseArrivalRegistered(request)), requested: Boolean(request.purchaseAt || request.purchaseOrder || request.sapRequestNumber) || hasApprovedPurchasePending(request) },
-    { key: "recebimento", label: "Recebimento", date: request.receiptAt, done: Boolean(request.receiptAt), active: getDisplayStatus(request) === "recebimento", requested: Boolean(request.receiptAt) || getDisplayStatus(request) === "recebimento" },
-    { key: "retirado", label: "Retirada", date: request.withdrawnAt, done: request.status === "retirado", active: hasPickupPending(request), requested: Boolean(request.withdrawnAt) || hasPickupPending(request) },
-    { key: "cancelamento", label: "Cancelamento", date: request.cancellationApprovedAt || request.cancellationRejectedAt || request.cancellationRequestedAt, done: request.status === "cancelado" || Boolean(request.cancellationRejectedAt), active: getDisplayStatus(request) === "cancelamento", requested: Boolean(request.cancellationRequestedAt) || request.status === "cancelamento" || request.status === "cancelado" },
+    { key: "cadastro", label: "Cadastro SAP", date: registrationInfo.date, done: registrationInfo.done, active: !isCanceled && request.status === "cadastro", requested: registrationInfo.requested },
+    { key: "atendimento", label: "Almoxarifado", date: request.attendedAt, done: Boolean(request.attendedAt), active: !isCanceled && request.status === "solicitacao", requested: true },
+    { key: "cd", label: "CD", date: request.cdAt, done: Boolean(request.cdAt), active: !isCanceled && request.status === "cd", requested: Boolean(request.cdAt) || request.status === "cd" || request.items.some((item) => getCdPendingQty(item) > 0 || Number(item.cdQty) > 0) },
+    { key: "aprovacao", label: "Aprovação", date: request.purchaseApprovedAt, done: Boolean(request.purchaseApprovedAt) || request.status === "reprovado", active: !isCanceled && hasPurchaseApprovalPending(request), requested: Boolean(request.purchaseApprovalRequestedAt || request.purchaseApprovedAt) || hasPurchaseApprovalPending(request) },
+    { key: "compra", label: "Compra", date: request.purchaseAt, done: Boolean(hasPurchaseReceipt(request)), active: !isCanceled && (displayStatus === "compra" || (displayStatus === "recebimento" && isPurchaseArrivalRegistered(request))), requested: Boolean(request.purchaseAt || request.purchaseOrder || request.sapRequestNumber) || hasApprovedPurchasePending(request) },
+    { key: "recebimento", label: "Recebimento", date: request.receiptAt, done: Boolean(request.receiptAt), active: !isCanceled && displayStatus === "recebimento", requested: Boolean(request.receiptAt) || displayStatus === "recebimento" },
+    { key: "retirado", label: "Retirada", date: request.withdrawnAt, done: request.status === "retirado", active: !isCanceled && hasPickupPending(request), requested: Boolean(request.withdrawnAt) || hasPickupPending(request) },
+    { key: "cancelamento", label: "Cancelamento", date: request.cancellationApprovedAt || request.cancellationRejectedAt || request.cancellationRequestedAt, done: request.status === "cancelado" || Boolean(request.cancellationRejectedAt), active: !isCanceled && displayStatus === "cancelamento", requested: Boolean(request.cancellationRequestedAt) || request.status === "cancelamento" || request.status === "cancelado" },
   ];
   return steps
     .map((step) => {

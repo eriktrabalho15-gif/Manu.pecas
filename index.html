@@ -6,7 +6,7 @@
     <title>ManuPeças | JTP Transportes</title>
     <link rel="icon" href="./favicon.ico" sizes="any" />
     <link rel="apple-touch-icon" href="./favicon.png" />
-    <link rel="stylesheet" href="./styles.css?v=20260812-supabase-status" />
+    <link rel="stylesheet" href="./styles.css?v=20260818-cancelamento-filtros" />
   </head>
   <body data-view="login">
     <section class="login-screen" id="login-screen">
@@ -199,6 +199,17 @@
               <span>Retiradas liberadas</span>
               <strong id="manager-service-rate">0%</strong>
             </article>
+          </div>
+
+          <div class="queue-search" aria-label="Filtros da fila">
+            <label>
+              <span>Filtrar por solicitação</span>
+              <input id="queue-request-filter" type="search" placeholder="Ex.: BP - 0045" autocomplete="off" />
+            </label>
+            <label>
+              <span>Filtrar por peça</span>
+              <input id="queue-part-filter" type="search" placeholder="Código ou descrição" autocomplete="off" />
+            </label>
           </div>
 
           <div class="request-list" id="request-list" aria-live="polite"></div>
@@ -567,7 +578,7 @@
         SUPABASE_PUBLIC_KEY
       );
     </script>
-    <script src="./app.js?v=20260818-outlook-email-fix"></script>
+    <script src="./app.js?v=20260818-outlook-cc-workaround"></script>
   </body>
 </html>
 
