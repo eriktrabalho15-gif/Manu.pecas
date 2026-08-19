@@ -546,6 +546,7 @@ if (currentUser) {
 
 async function startApp() {
   clearQueueFilters();
+  hardenQueueFiltersAgainstAutofill();
   body.dataset.view = "app";
   body.dataset.role = currentUser.role;
   sessionLabel.textContent = `${currentUser.label} | ${currentUser.email}`;
@@ -582,6 +583,7 @@ async function startApp() {
   }
   syncStructuredTablesSafely("abertura do app");
   renderAppSafely();
+  scheduleQueueFilterAutofillCleanup();
 }
 
 function syncStructuredTablesSafely(context = "sincronização") {
@@ -2529,6 +2531,43 @@ function clearQueueFilters() {
   });
 }
 
+function hardenQueueFiltersAgainstAutofill() {
+  [queueRequestFilter, queuePartFilter, queueCarFilter].forEach((input) => {
+    if (!input) return;
+    input.setAttribute("autocomplete", "new-password");
+    input.setAttribute("data-lpignore", "true");
+    input.setAttribute("data-form-type", "other");
+    input.defaultValue = "";
+  });
+}
+
+function scheduleQueueFilterAutofillCleanup() {
+  [0, 150, 600, 1500].forEach((delay) => {
+    window.setTimeout(() => {
+      if (clearAutofilledQueueFilters() && currentPage === "pending") render();
+    }, delay);
+  });
+}
+
+function clearAutofilledQueueFilters() {
+  const knownLogins = new Set([
+    ...Object.keys(getAllAccounts()),
+    currentUser?.email,
+  ].filter(Boolean).map(normalizeLogin));
+  let changed = false;
+  [queueRequestFilter, queuePartFilter, queueCarFilter].forEach((input) => {
+    if (!input) return;
+    const value = String(input.value || "").trim();
+    const compact = normalizeLogin(value);
+    const looksLikeUserLogin = knownLogins.has(compact) || /^[a-z]+[._-][a-z]+$/i.test(value) || value.includes("@");
+    if (looksLikeUserLogin) {
+      input.value = "";
+      changed = true;
+    }
+  });
+  return changed;
+}
+
 function createCard(request) {
   const card = requestTemplate.content.firstElementChild.cloneNode(true);
   const pickupMode = currentUser.role === "almox" && currentFilter === "atendimento" && hasPickupPending(request);
@@ -2572,6 +2611,8 @@ function createCard(request) {
   const isCancellationStatus = getDisplayStatus(request) === "cancelamento" || getDisplayStatus(request) === "cancelado";
   const canCurrentUserReceive = (currentUser.role === "almox" || currentUser.role === "cd") && currentFilter === "recebimento";
   const isReceiptQueue = isReceiptFlow && canCurrentUserReceive;
+  const isCdAttendanceQueue = currentUser.role === "cd" && currentFilter === "cd" && getDisplayStatus(request) === "cd";
+  const isAlmoxCdViewOnly = currentUser.role === "almox" && currentFilter === "cd";
   status.textContent = getRequestStatusText(request, displayStatus);
   status.className = `status-pill status-${displayStatus}`;
   card.querySelector(".request-summary").addEventListener("click", () => card.classList.toggle("expanded"));
@@ -2643,9 +2684,9 @@ function createCard(request) {
     `;
     partsList.append(li);
     if (request.status !== "cadastro" && request.status !== "compra" && request.status !== "aprovacao" && request.status !== "recebimento" && request.status !== "cancelamento" && request.status !== "cancelado" && !pickupMode) {
-      if (currentUser.role === "cd") {
+      if (isCdAttendanceQueue) {
         if (getCdPendingQty(item) > 0) fulfillmentList.append(createCdFulfillmentLine(item, index));
-      } else {
+      } else if (currentUser.role === "almox" && currentFilter !== "cd") {
         fulfillmentList.append(createFulfillmentLine(item, index));
       }
     }
@@ -2674,7 +2715,7 @@ function createCard(request) {
     card.querySelector(".transfer-invoice-field").hidden = true;
   }
 
-  if (request.status !== "compra" && request.status !== "aprovacao" && request.status !== "recebimento" && currentUser.role === "cd") {
+  if (isCdAttendanceQueue) {
     card.querySelector(".save-fulfillment").hidden = true;
     emailButton.innerHTML = "<span>1</span> Salvar e enviar e-mail";
     emailButton.disabled = false;
@@ -2732,6 +2773,21 @@ function createCard(request) {
     : request.items.filter((item) => isPurchaseItemActive(request, item));
   fulfillmentPanel.hidden = (request.status === "cadastro" || isCancellationStatus || isPurchaseQueuePending(request) || request.status === "aprovacao" || isReceiptFlow) && !pickupMode ? true : false;
   purchaseWorkflow.classList.toggle("active", (((isPurchaseQueuePending(request) && currentUser.role === "compras") || (isPurchaseQueuePending(request) && currentUser.role === "almox" && currentFilter === "compra") || isReceiptQueue) && !pickupMode && !isCancellationStatus));
+  if (isCdAttendanceQueue) {
+    fulfillmentPanel.hidden = false;
+    fulfillmentList.hidden = false;
+    purchaseWorkflow.classList.remove("active");
+    if (!fulfillmentList.children.length) {
+      const emptyLine = document.createElement("div");
+      emptyLine.className = "fulfillment-row";
+      emptyLine.innerHTML = "<div><strong>Nenhum item pendente para o CD.</strong><span>Atualize a página ou confira o status da solicitação.</span></div>";
+      fulfillmentList.append(emptyLine);
+    }
+  }
+  if (isAlmoxCdViewOnly) {
+    fulfillmentPanel.hidden = true;
+    purchaseWorkflow.classList.remove("active");
+  }
   purchaseItems.innerHTML = purchaseLines.length
     ? purchaseLines.map((item) => {
       const cdReceiptQty = Number(item.cdQty) || 0;

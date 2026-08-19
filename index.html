@@ -204,15 +204,15 @@
           <div class="queue-search" aria-label="Filtros da fila">
             <label>
               <span>Filtrar por solicitação</span>
-              <input id="queue-request-filter" name="manupecas-filtro-solicitacao" type="search" placeholder="Ex.: BP - 0045" autocomplete="off" autocapitalize="none" spellcheck="false" />
+              <input id="queue-request-filter" name="manupecas-busca-solicitacao" type="search" placeholder="Ex.: BP - 0045" autocomplete="new-password" autocapitalize="none" spellcheck="false" data-lpignore="true" data-form-type="other" />
             </label>
             <label>
               <span>Filtrar por peça</span>
-              <input id="queue-part-filter" name="manupecas-filtro-peca" type="search" placeholder="Código ou descrição" autocomplete="off" autocapitalize="none" spellcheck="false" />
+              <input id="queue-part-filter" name="manupecas-busca-peca" type="search" placeholder="Código ou descrição" autocomplete="new-password" autocapitalize="none" spellcheck="false" data-lpignore="true" data-form-type="other" />
             </label>
             <label>
               <span>Filtrar por carro</span>
-              <input id="queue-car-filter" name="manupecas-filtro-carro" type="search" placeholder="Prefixo ou frota" autocomplete="off" autocapitalize="none" spellcheck="false" />
+              <input id="queue-car-filter" name="manupecas-busca-carro" type="search" placeholder="Prefixo ou frota" autocomplete="new-password" autocapitalize="none" spellcheck="false" data-lpignore="true" data-form-type="other" />
             </label>
           </div>
 
@@ -582,7 +582,7 @@
         SUPABASE_PUBLIC_KEY
       );
     </script>
-    <script src="./app.js?v=20260819-email-fluxos-revisados"></script>
+    <script src="./app.js?v=20260819-filtros-sem-autofill"></script>
   </body>
 </html>
 
