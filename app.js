@@ -68,7 +68,7 @@ const emailStepLabels = {
   almox: "Atendimento Almoxarifado",
   cd: "Atendimento CD",
   approval: "Aprovação de compra",
-  purchase: "Compra",
+  purchase: "Em espera",
   receipt: "Recebimento",
   pickup: "Retirada",
   cancellation: "Cancelamento",
@@ -712,15 +712,14 @@ function getUserNotifications() {
     }
     if (currentUser.role === "almox") {
       if (request.status === "solicitacao") push(request, "almox", "Pendente de atendimento do Almoxarifado", "solicitacao");
+      if (isSapRequestPending(request)) push(request, "sap", "Pendente solicitação SAP", "compra");
+      if (isWaitingArrivalPending(request)) push(request, "espera", "Aguardando chegada da peça", "espera");
       if (getDisplayStatus(request) === "recebimento") push(request, "recebimento", "Pendente entrada e recebimento", "recebimento");
       if (hasPickupPending(request)) push(request, "retirada", "Retirada do PCM pendente", "atendimento");
     }
     if (currentUser.role === "cd") {
       if (request.status === "cd") push(request, "cd", "Pendente de atendimento do CD", "cd");
       if (getDisplayStatus(request) === "recebimento") push(request, "recebimento", "Pendente entrada e recebimento", "recebimento");
-    }
-    if (currentUser.role === "compras" && isPurchaseQueuePending(request) && getPurchasePendingQtySum(request) > 0) {
-      push(request, "compra", "Pendente de pedido de compra", "compra", "purchase");
     }
     if ((currentUser.role === "manager" || currentUser.role === "admin") && hasPurchasedItemWaitingReceipt(request)) {
       push(request, "chegada-compra", "Item comprado chegou", "compra", "history", getReceiptPendingItems(request).length);
@@ -747,6 +746,7 @@ function getUserNotifications() {
 function getNotificationItemCount(request, filter) {
   if (filter === "atendimento") return request.items.filter(isPickupItemPending).length;
   if (filter === "recebimento") return getReceiptPendingItems(request).length;
+  if (filter === "espera") return request.items.filter((item) => isPurchaseItemActive(request, item)).length;
   if (filter === "compra" && currentUser?.role === "compras") return request.items.filter((item) => isPurchaseItemActive(request, item)).length;
   if (filter === "compra") return request.items.filter((item) => isPurchaseItemActive(request, item)).length;
   if (filter === "cd") return request.items.filter((item) => getCdPendingQty(item) > 0).length;
@@ -2460,7 +2460,7 @@ function render() {
     }
     if (currentUser.role === "pcm") {
       if (currentFilter === "atendimento") return hasPickupPending(request);
-      if (currentFilter === "compra") return request.status === "aprovacao" || request.status === "compra" || request.status === "recebimento" || request.status === "reprovado";
+      if (currentFilter === "compra" || currentFilter === "espera") return request.status === "aprovacao" || request.status === "compra" || request.status === "recebimento" || request.status === "reprovado";
       if (currentFilter === "solicitacao") return request.status === "solicitacao" || request.status === "cadastro";
       return request.status === currentFilter;
     }
@@ -2476,11 +2476,15 @@ function render() {
       return request.status === "atendimento" || hasPickupPending(request);
     }
     if (currentUser.role === "almox" && currentFilter === "compra") {
-      return isPurchaseQueuePending(request);
+      return isSapRequestPending(request);
+    }
+    if (currentUser.role === "almox" && currentFilter === "espera") {
+      return isWaitingArrivalPending(request);
     }
     if (currentUser.role === "almox" && currentFilter === "cd") return request.status === "cd";
     if (currentFilter === "solicitacao") return request.status === "solicitacao" || request.status === "cadastro";
-    if (currentFilter === "compra") return isPurchaseQueuePending(request);
+    if (currentFilter === "compra") return isSapRequestPending(request);
+    if (currentFilter === "espera") return isWaitingArrivalPending(request);
     return request.status === currentFilter;
   }).filter(matchesQueueFilters);
 
@@ -2586,6 +2590,8 @@ function createCard(request) {
   const purchaseWorkflow = card.querySelector(".purchase-workflow");
   const purchaseTitle = card.querySelector(".purchase-title");
   const purchaseItems = card.querySelector(".purchase-items");
+  const sapCopyItemsButton = card.querySelector(".sap-copy-items");
+  const sapCopyMessage = card.querySelector(".sap-copy-message");
   const sapRequestInput = card.querySelector(".sap-request-number");
   const sapRequestSaveButton = card.querySelector(".sap-request-save");
   const purchaseOrderInput = card.querySelector(".purchase-order");
@@ -2604,10 +2610,13 @@ function createCard(request) {
   const receiptPasswordInput = card.querySelector(".receipt-password");
   const receiptMessage = card.querySelector(".receipt-message");
 
-  const displayStatus = pickupOnlyView ? "atendimento" : currentFilter === "compra" && isPurchaseQueuePending(request) ? "compra" : getDisplayStatus(request);
+  const displayStatus = pickupOnlyView ? "atendimento" : (currentFilter === "compra" || currentFilter === "espera") && isPurchaseQueuePending(request) ? "compra" : getDisplayStatus(request);
   const isReceiptFlow = currentFilter === "recebimento" && displayStatus === "recebimento";
-  const isAlmoxPurchaseQueue = isPurchaseQueuePending(request) && currentUser.role === "almox" && currentFilter === "compra";
-  const isBuyerPurchaseQueue = isPurchaseQueuePending(request) && currentUser.role === "compras";
+  const isSapRequestView = isSapRequestPending(request) && currentFilter === "compra";
+  const isWaitingArrivalView = isWaitingArrivalPending(request) && currentFilter === "espera";
+  const isSapRequestQueue = isSapRequestView && currentUser.role === "almox";
+  const isWaitingArrivalQueue = isWaitingArrivalView && currentUser.role === "almox";
+  const isBuyerPurchaseQueue = false;
   const isCancellationStatus = getDisplayStatus(request) === "cancelamento" || getDisplayStatus(request) === "cancelado";
   const canCurrentUserReceive = (currentUser.role === "almox" || currentUser.role === "cd") && currentFilter === "recebimento";
   const isReceiptQueue = isReceiptFlow && canCurrentUserReceive;
@@ -2633,7 +2642,7 @@ function createCard(request) {
   response.textContent = request.response;
   note.value = request.response;
   renderCancellationPanel(request, cancelPanel);
-  purchaseTitle.textContent = isReceiptFlow ? "Recebimento e entrada SAP" : "Compra";
+  purchaseTitle.textContent = isReceiptFlow ? "Recebimento e entrada SAP" : isWaitingArrivalQueue ? "Em espera" : "Solicitação SAP";
   sapRequestInput.value = request.sapRequestNumber || "";
   sapRequestInput.readOnly = currentUser.role !== "almox" || Boolean(request.sapRequestNumber);
   purchaseOrderInput.value = request.purchaseOrder || "";
@@ -2709,7 +2718,7 @@ function createCard(request) {
 
   if (isPurchaseQueuePending(request) || request.status === "recebimento") {
     fulfillmentPanel.hidden = true;
-    if (currentFilter === "compra" || currentFilter === "recebimento") {
+    if (currentFilter === "compra" || currentFilter === "espera" || currentFilter === "recebimento") {
       purchaseWorkflow.classList.add("active");
     }
     card.querySelector(".transfer-invoice-field").hidden = true;
@@ -2772,7 +2781,7 @@ function createCard(request) {
     ? getReceiptPendingItems(request)
     : request.items.filter((item) => isPurchaseItemActive(request, item));
   fulfillmentPanel.hidden = (request.status === "cadastro" || isCancellationStatus || isPurchaseQueuePending(request) || request.status === "aprovacao" || isReceiptFlow) && !pickupMode ? true : false;
-  purchaseWorkflow.classList.toggle("active", (((isPurchaseQueuePending(request) && currentUser.role === "compras") || (isPurchaseQueuePending(request) && currentUser.role === "almox" && currentFilter === "compra") || isReceiptQueue) && !pickupMode && !isCancellationStatus));
+  purchaseWorkflow.classList.toggle("active", ((isSapRequestView || isWaitingArrivalView || isReceiptQueue) && !pickupMode && !isCancellationStatus));
   if (isCdAttendanceQueue) {
     fulfillmentPanel.hidden = false;
     fulfillmentList.hidden = false;
@@ -2803,7 +2812,7 @@ function createCard(request) {
         ${isReceiptFlow ? `<label class="receipt-item-check"><input class="receipt-item-toggle" type="checkbox" data-index="${request.items.indexOf(item)}" /> Receber este item</label>` : ""}
         <strong>${item.code}</strong>
         <span>${item.description}</span>
-        <em>${isReceiptFlow ? `${cdReceiptQty + purchaseReceiptQty} un. para entrada e recebimento` : `${getPurchasePendingQty(item)} un. para compra`}</em>
+        <em>${isReceiptFlow ? `${cdReceiptQty + purchaseReceiptQty} un. para entrada e recebimento` : `${getPurchasePendingQty(item)} un. aguardando`}</em>
         ${receiptNotes ? `<small>${receiptNotes}</small>` : ""}
         ${transferInvoiceMarkup ? `<small>NF transferência: ${transferInvoiceMarkup}</small>` : ""}
       </div>`;
@@ -2811,23 +2820,26 @@ function createCard(request) {
     : `<div><span>${isReceiptFlow ? "Nenhum item pendente de entrada e recebimento." : "Nenhum item pendente de compra."}</span></div>`;
   purchaseSaveButton.addEventListener("click", () => savePurchaseOrder(request.id, card, false));
   purchaseEmailButton.addEventListener("click", () => savePurchaseOrder(request.id, card, true));
+  sapCopyItemsButton.addEventListener("click", () => copySapItems(request, purchaseLines, sapCopyMessage));
   sapRequestSaveButton.addEventListener("click", () => saveSapRequestNumber(request.id, card));
   purchaseArrivalSaveButton.addEventListener("click", () => registerPurchaseArrival(request.id, card));
   purchaseArrivalButton.addEventListener("click", () => confirmReceiptEntry(request.id, card));
   receiptInvoiceInput.addEventListener("change", () => {
     receiptInvoiceName.textContent = receiptInvoiceInput.files.length ? `NF fornecedor selecionada: ${receiptInvoiceInput.files[0].name}` : request.receiptInvoiceName ? `NF fornecedor anexada: ${request.receiptInvoiceName}` : "";
   });
-  purchaseSaveButton.textContent = request.purchaseOrder ? "Atualizar previsão de entrega" : "Salvar pedido de compra";
-  purchaseArrivalSaveButton.textContent = "Item chegou ao Almoxarifado";
+  purchaseSaveButton.textContent = "Salvar pedido de compra";
+  purchaseArrivalSaveButton.textContent = "Confirmar chegada da peça";
   purchaseSaveButton.hidden = !isBuyerPurchaseQueue;
   purchaseEmailButton.hidden = !isBuyerPurchaseQueue;
-  sapRequestSaveButton.hidden = !isAlmoxPurchaseQueue || Boolean(request.sapRequestNumber);
-  purchaseArrivalSaveButton.hidden = !isAlmoxPurchaseQueue || !request.purchaseOrder;
+  sapCopyItemsButton.hidden = !isSapRequestView;
+  sapCopyMessage.hidden = !isSapRequestView;
+  sapRequestSaveButton.hidden = !isSapRequestQueue || Boolean(request.sapRequestNumber);
+  purchaseArrivalSaveButton.hidden = !isWaitingArrivalQueue;
   purchaseArrivalButton.hidden = !isReceiptQueue;
-  sapRequestInput.closest(".field").hidden = isReceiptFlow && !request.sapRequestNumber;
-  purchaseOrderInput.closest(".field").hidden = currentUser.role !== "compras" && !request.purchaseOrder;
-  deliveryDateInput.closest(".field").hidden = !isBuyerPurchaseQueue;
-  buyerNoteInput.closest(".field").hidden = currentUser.role !== "compras" && !request.buyerNote;
+  sapRequestInput.closest(".field").hidden = (isReceiptFlow && !request.sapRequestNumber) || (isSapRequestView && currentUser.role !== "almox");
+  purchaseOrderInput.closest(".field").hidden = true;
+  deliveryDateInput.closest(".field").hidden = true;
+  buyerNoteInput.closest(".field").hidden = true;
   purchaseSaveButton.disabled = currentUser.role === "compras" && !request.sapRequestNumber;
   purchaseSaveButton.title = request.sapRequestNumber ? "" : "Aguardando o Almoxarifado informar a solicitação SAP";
   purchaseEmailButton.disabled = !request.purchaseOrder;
@@ -3336,7 +3348,7 @@ async function saveSapRequestNumber(id, card) {
     sapRequestNumber,
     sapRequestAt: request.sapRequestAt || now,
     sapRequestBy: currentUser.name || currentUser.label,
-    response: `Solicitação SAP registrada pelo Almoxarifado: ${sapRequestNumber}. Pendente atualização de Compras com pedido, previsão e acompanhamento.`,
+    response: `Solicitação SAP registrada pelo Almoxarifado: ${sapRequestNumber}. Item aguardando chegada.`,
   };
   requests = requests.map((item) => (item.id === id ? updatedRequest : item));
   persistRequestsLocally();
@@ -3349,10 +3361,6 @@ async function registerPurchaseArrival(id, card) {
   if (currentUser.role !== "almox") return;
   const request = requests.find((item) => item.id === id);
   if (!request) return;
-  if (!request.purchaseOrder) {
-    window.alert("Aguardando Compras informar o pedido de compra.");
-    return;
-  }
   prepareMailPopup();
   const arrivedDate = getTodayDateInputValue();
   const now = new Date().toISOString();
@@ -3612,6 +3620,10 @@ function getDisplayItemsForCurrentView(request) {
     const purchaseItems = request.items.filter((item) => isPurchaseItemActive(request, item));
     return purchaseItems.length ? purchaseItems : request.items;
   }
+  if (currentFilter === "espera") {
+    const purchaseItems = request.items.filter((item) => isPurchaseItemActive(request, item));
+    return purchaseItems.length ? purchaseItems : request.items;
+  }
   return request.items;
 }
 
@@ -3630,6 +3642,46 @@ function isPurchaseItemActive(request, item) {
 
 function isPurchaseQueuePending(request) {
   return Boolean(request && !isPurchaseArrivalRegistered(request) && request.items?.some((item) => isPurchaseItemActive(request, item)));
+}
+
+function isSapRequestPending(request) {
+  return Boolean(isPurchaseQueuePending(request) && !request.sapRequestNumber);
+}
+
+function isWaitingArrivalPending(request) {
+  return Boolean(isPurchaseQueuePending(request) && request.sapRequestNumber && !isPurchaseArrivalRegistered(request));
+}
+
+function formatSapExtractionLines(items) {
+  return items
+    .filter((item) => getPurchasePendingQty(item) > 0)
+    .map((item) => `${item.code}\t${getPurchasePendingQty(item)}`)
+    .join("\n");
+}
+
+async function copySapItems(request, items, messageElement) {
+  const text = formatSapExtractionLines(items);
+  if (!text) {
+    if (messageElement) messageElement.textContent = "Nenhum item pendente para copiar.";
+    return;
+  }
+  const copiedCount = items.filter((item) => getPurchasePendingQty(item) > 0).length;
+  const successMessage = `${formatItemCount(copiedCount)} copiado(s): código e quantidade.`;
+  try {
+    await navigator.clipboard.writeText(text);
+    if (messageElement) messageElement.textContent = successMessage;
+  } catch (error) {
+    const textarea = document.createElement("textarea");
+    textarea.value = text;
+    textarea.setAttribute("readonly", "");
+    textarea.style.position = "fixed";
+    textarea.style.left = "-9999px";
+    document.body.append(textarea);
+    textarea.select();
+    document.execCommand("copy");
+    textarea.remove();
+    if (messageElement) messageElement.textContent = successMessage;
+  }
 }
 
 function getTodayDateInputValue() {
@@ -3683,9 +3735,7 @@ function getDisplayStatus(request) {
 function getRequestStatusText(request, displayStatus = getDisplayStatus(request)) {
   if (displayStatus === "compra") {
     if (!request.sapRequestNumber) return "Pendente solicitação SAP pelo Almoxarifado";
-    if (!request.purchaseOrder) return "Pendente pedido de compra";
-    if (!request.deliveryDate) return "Pendente previsão de entrega";
-    if (!isPurchaseArrivalRegistered(request)) return "Pendente chegada da compra";
+    if (!isPurchaseArrivalRegistered(request)) return "Em espera da chegada da peça";
   }
   return statusText[displayStatus] || displayStatus || "-";
 }
@@ -4940,7 +4990,7 @@ function canCurrentUserApprovePurchase() {
 
 function renderPurchaseOverview() {
   const purchaseRequests = requests
-    .filter(isPurchaseQueuePending)
+    .filter(isWaitingArrivalPending)
     .map((request) => ({
       request,
       items: request.items.filter((item) => isPurchaseItemActive(request, item)),
@@ -4950,35 +5000,27 @@ function renderPurchaseOverview() {
   purchaseOverviewList.innerHTML = "";
 
   if (purchaseRequests.length === 0) {
-    purchaseOverviewList.innerHTML = '<div class="empty-state">Nenhum item pendente de compra.</div>';
+    purchaseOverviewList.innerHTML = '<div class="empty-state">Nenhum item aguardando chegada.</div>';
     return;
   }
 
   purchaseRequests.forEach(({ request, items }) => {
     const row = document.createElement("article");
-    const buyerView = currentUser.role === "compras";
-    row.className = `history-row purchase-request-row ${buyerView ? "buyer-request-row" : ""}`;
+    const buyerView = false;
+    row.className = "history-row purchase-request-row";
     const purchaseReceived = items.some((item) => (Number(item.purchaseReceivedQty) || 0) > 0);
-    const purchaseMeta = buyerView ? `
-          <div><small>Solicitação SAP</small><b>${request.sapRequestNumber || "-"}</b></div>
-          <div><small>Pedido de compra</small><b>${request.purchaseOrder || "-"}</b></div>
-          <div><small>Previsão de entrega</small><b>${request.deliveryDate ? formatDateOnly(request.deliveryDate) : "-"}</b></div>
-          <div><small>Observação de compras</small><b>${request.buyerNote || "-"}</b></div>
-        ` : `
+    const purchaseMeta = `
           <div><small>Envio para compra</small><b>${formatDateOrDash(request.purchaseAt)}</b></div>
           <div><small>Solicitação SAP</small><b>${request.sapRequestNumber || "-"}</b></div>
-          <div><small>Previsão de entrega</small><b>${request.deliveryDate ? formatDateOnly(request.deliveryDate) : "-"}</b></div>
           <div><small>Chegada real</small><b>${request.purchaseArrivedDate ? formatDateOnly(request.purchaseArrivedDate) : "-"}</b></div>
           <div><small>Recebimento Almox</small><b>${purchaseReceived ? formatDateOrDash(request.receiptAt) : "-"}</b></div>
-          <div><small>Pedido de compra</small><b>${request.purchaseOrder || "-"}</b></div>
           <div><small>Entrada SAP</small><b>${purchaseReceived ? request.receiptNumber || "-" : "-"}</b></div>
-          <div><small>Observação de compras</small><b>${request.buyerNote || "-"}</b></div>
         `;
     row.innerHTML = `
       <button class="history-summary" type="button" aria-expanded="false">
         <div>
           <strong>${request.id}</strong>
-          <span>${getRequestTargetLabel(request)} | ${formatItemCount(items.length)} pendente(s) de compra</span>
+          <span>${getRequestTargetLabel(request)} | ${formatItemCount(items.length)} em espera</span>
         </div>
         <div><small>Solicitação</small><b>${request.id}</b></div>
         <div><small>SLA total</small><b>${getCurrentSla(request)}</b></div>
@@ -4990,27 +5032,6 @@ function renderPurchaseOverview() {
         <div class="history-meta history-dates">
           ${purchaseMeta}
         </div>
-        ${buyerView ? `
-          <div class="purchase-delivery-editor">
-            <label>
-              Solicitação SAP
-              <input class="purchase-overview-sap" type="text" value="${request.sapRequestNumber || "Aguardando Almoxarifado"}" readonly />
-            </label>
-            <label>
-              Número do pedido de compra
-              <input class="purchase-overview-order" type="text" value="${request.purchaseOrder || ""}" placeholder="Ex.: 4500123456" ${request.purchaseOrder ? "readonly" : ""} ${request.sapRequestNumber ? "" : "disabled"} />
-            </label>
-            <label>
-              Previsão de entrega
-              <input class="purchase-overview-delivery" type="date" value="${request.deliveryDate || ""}" ${request.sapRequestNumber ? "" : "disabled"} />
-            </label>
-            <label class="purchase-note-label">
-              Observação de Compras
-              <textarea class="purchase-overview-note" rows="3" ${request.sapRequestNumber ? "" : "disabled"}>${request.buyerNote || ""}</textarea>
-            </label>
-            <button class="action available purchase-overview-save" type="button" ${request.sapRequestNumber ? "" : "disabled"}>Salvar compra</button>
-          </div>
-        ` : ""}
       </div>
     `;
     const summary = row.querySelector(".history-summary");
@@ -5018,10 +5039,6 @@ function renderPurchaseOverview() {
       const expanded = row.classList.toggle("expanded");
       summary.setAttribute("aria-expanded", String(expanded));
     });
-    const saveDeliveryButton = row.querySelector(".purchase-overview-save");
-    if (saveDeliveryButton) {
-      saveDeliveryButton.addEventListener("click", () => savePurchaseDelivery(request.id, row.querySelector(".purchase-overview-order").value, row.querySelector(".purchase-overview-delivery").value, row.querySelector(".purchase-overview-note").value));
-    }
     purchaseOverviewList.append(row);
   });
 }

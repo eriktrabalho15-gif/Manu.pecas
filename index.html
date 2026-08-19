@@ -6,7 +6,7 @@
     <title>ManuPeças | JTP Transportes</title>
     <link rel="icon" href="./favicon.ico" sizes="any" />
     <link rel="apple-touch-icon" href="./favicon.png" />
-    <link rel="stylesheet" href="./styles.css?v=20260818-filtro-carro" />
+    <link rel="stylesheet" href="./styles.css?v=20260819-extrair-sap-visivel" />
   </head>
   <body data-view="login">
     <section class="login-screen" id="login-screen">
@@ -86,7 +86,7 @@
         <button class="tab-button active" type="button" data-page="request">Pedido</button>
         <button class="tab-button" type="button" data-page="pending">Solicitações</button>
         <button class="tab-button approval-tab" type="button" data-page="approval" hidden>Aprovação de compra</button>
-        <button class="tab-button purchase-tab" type="button" data-page="purchase">Compra</button>
+        <button class="tab-button purchase-tab" type="button" data-page="purchase">Em espera</button>
         <button class="tab-button part-admin-tab" type="button" data-page="part-admin">Cadastro de Item</button>
         <button class="tab-button email-admin-tab" type="button" data-page="email-admin">E-mail</button>
         <button class="tab-button admin-tab" type="button" data-page="admin">Acessos</button>
@@ -180,9 +180,10 @@
             <div class="filters" aria-label="Filtrar solicitações">
               <button class="filter-button active" type="button" data-filter="solicitacao">ALMOXARIFADO</button>
               <button class="filter-button" type="button" data-filter="cd">CD</button>
+              <button class="filter-button" type="button" data-filter="compra">SOLICITAÇÃO SAP</button>
+              <button class="filter-button" type="button" data-filter="espera">EM ESPERA</button>
               <button class="filter-button" type="button" data-filter="recebimento">RECEBIMENTO</button>
               <button class="filter-button" type="button" data-filter="atendimento">RETIRADA</button>
-              <button class="filter-button" type="button" data-filter="compra">COMPRA</button>
             </div>
           </div>
 
@@ -286,8 +287,8 @@
           <div class="queue-header">
             <div>
               <p class="eyebrow">Gerente</p>
-              <h2>Pendência de compras</h2>
-              <p>Itens, solicitação SAP, pedido de compra, chegada e SLA.</p>
+              <h2>Itens em espera</h2>
+              <p>Itens com solicitação SAP aberta aguardando chegada.</p>
             </div>
           </div>
 
@@ -524,6 +525,8 @@
           <div class="purchase-workflow">
             <div class="purchase-title">Compra</div>
             <div class="purchase-items"></div>
+            <button class="action sap-copy-items" type="button">Copiar códigos e quantidades</button>
+            <small class="sap-copy-message"></small>
             <div class="field">
               <label>Número da solicitação SAP</label>
               <input class="sap-request-number" placeholder="Ex.: 1000123456" />
@@ -582,7 +585,7 @@
         SUPABASE_PUBLIC_KEY
       );
     </script>
-    <script src="./app.js?v=20260819-filtros-sem-autofill"></script>
+    <script src="./app.js?v=20260819-extrair-sap-visivel"></script>
   </body>
 </html>
 

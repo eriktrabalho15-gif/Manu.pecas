@@ -2157,6 +2157,17 @@ dd {
   font-weight: 850;
 }
 
+.sap-copy-items {
+  margin-top: 8px;
+}
+
+.sap-copy-message {
+  display: block;
+  color: var(--green);
+  font-weight: 850;
+  min-height: 18px;
+}
+
 .action-grid {
   display: grid;
   grid-template-columns: 1fr;
@@ -2299,6 +2310,7 @@ body[data-role="admin"] .almox-actions {
 
 body[data-role="cd"] .filter-button[data-filter="solicitacao"],
 body[data-role="cd"] .filter-button[data-filter="atendimento"],
+body[data-role="cd"] .filter-button[data-filter="espera"],
 body[data-role="cd"] .filter-button[data-filter="compra"] {
   display: none;
 }
