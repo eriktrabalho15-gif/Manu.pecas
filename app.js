@@ -1961,6 +1961,10 @@ function saveRequests() {
   });
 }
 
+function persistRequestsLocally() {
+  localStorage.setItem(REQUESTS_KEY, JSON.stringify(requests));
+}
+
 async function saveRequestsSafely(context = "solicitações") {
   try {
     await saveRequests();
@@ -2934,8 +2938,9 @@ async function requestCancellation(id) {
     if (item.id === id) updatedRequest = item;
     return item;
   });
-  await saveRequestsSafely("solicitação de cancelamento");
+  persistRequestsLocally();
   if (updatedRequest) openCancellationRequestEmailDraft(updatedRequest, "");
+  await saveRequestsSafely("solicitação de cancelamento");
   render();
 }
 
@@ -2969,8 +2974,9 @@ async function approveCancellation(id) {
     return updatedRequest;
   });
   render();
-  await saveRequestsSafely("aprovação de cancelamento");
+  persistRequestsLocally();
   if (updatedRequest) openCancellationDecisionEmailDraft(updatedRequest, true, "");
+  await saveRequestsSafely("aprovação de cancelamento");
 }
 
 async function rejectCancellation(id) {
@@ -3003,8 +3009,9 @@ async function rejectCancellation(id) {
     return updatedRequest;
   });
   render();
-  await saveRequestsSafely("recusa de cancelamento");
+  persistRequestsLocally();
   if (updatedRequest) openCancellationDecisionEmailDraft(updatedRequest, false, "");
+  await saveRequestsSafely("recusa de cancelamento");
 }
 
 function resolveCancellationRestoredStatus(request) {
@@ -3141,9 +3148,9 @@ async function saveFulfillment(id, card, shouldEmail) {
   updatedRequest.almoxByEmail = currentUser.email;
 
   requests = requests.map((item) => (item.id === id ? updatedRequest : item));
-  await saveRequestsSafely("atendimento do Almoxarifado");
-
+  persistRequestsLocally();
   openAlmoxEmailDraft(updatedRequest, "");
+  await saveRequestsSafely("atendimento do Almoxarifado");
 
   render();
 }
@@ -3203,11 +3210,11 @@ async function saveCdFulfillment(id, card, shouldEmail) {
   };
 
   requests = requests.map((item) => (item.id === id ? updatedRequest : item));
-  await saveRequestsSafely("atendimento do CD");
-
+  persistRequestsLocally();
   if (shouldEmail) {
     openCdEmailDraft(updatedRequest, "");
   }
+  await saveRequestsSafely("atendimento do CD");
 
   render();
 }
@@ -3245,11 +3252,11 @@ async function savePurchaseOrder(id, card, shouldEmail) {
   };
 
   requests = requests.map((item) => (item.id === id ? updatedRequest : item));
-  await saveRequestsSafely("pedido de compra");
-
+  persistRequestsLocally();
   if (purchaseOrder) {
     openPurchaseEmailDraft(updatedRequest, "");
   }
+  await saveRequestsSafely("pedido de compra");
 
   render();
 }
@@ -3276,8 +3283,9 @@ async function saveSapRequestNumber(id, card) {
     response: `Solicitação SAP registrada pelo Almoxarifado: ${sapRequestNumber}. Pendente atualização de Compras com pedido, previsão e acompanhamento.`,
   };
   requests = requests.map((item) => (item.id === id ? updatedRequest : item));
-  await saveRequestsSafely("solicitação SAP");
+  persistRequestsLocally();
   openPurchaseEmailDraft(updatedRequest, "");
+  await saveRequestsSafely("solicitação SAP");
   render();
 }
 
@@ -3302,8 +3310,9 @@ async function registerPurchaseArrival(id, card) {
   };
 
   requests = requests.map((item) => (item.id === id ? updatedRequest : item));
-  await saveRequestsSafely("chegada de compra");
+  persistRequestsLocally();
   openPurchaseArrivalEmailDraft(updatedRequest, "");
+  await saveRequestsSafely("chegada de compra");
   render();
 }
 
@@ -3393,8 +3402,9 @@ async function confirmReceiptEntry(id, card) {
   };
 
   requests = requests.map((item) => (item.id === id ? updatedRequest : item));
-  await saveRequestsSafely("recebimento");
+  persistRequestsLocally();
   openReceiptEmailDraft(updatedRequest, "");
+  await saveRequestsSafely("recebimento");
   render();
 }
 
@@ -4313,14 +4323,19 @@ async function completePartRegistration(id, code, finalDescription, useExisting 
         }
       : item
   );
+  localStorage.setItem(REQUESTS_KEY, JSON.stringify(requests));
+  localStorage.setItem(CUSTOM_PARTS_KEY, JSON.stringify(customParts));
+  localStorage.setItem(PART_REGISTRATIONS_KEY, JSON.stringify(partRegistrations));
+  if (updatedRequests.length > 0) {
+    openPartRegistrationCompletedEmailDraft(updatedRequests[0], part, useExisting);
+  } else {
+    closePreparedMailPopup();
+  }
   await saveRequestsSafely("cadastro de item");
   saveCustomParts();
   savePartRegistrations();
   renderPartRegistrations();
   render();
-  if (updatedRequests.length > 0) {
-    openPartRegistrationCompletedEmailDraft(updatedRequests[0], part, useExisting);
-  }
 }
 
 function findPartByCode(code) {
@@ -4856,8 +4871,9 @@ async function approvePurchase(id, mode = "all", selectedCodes = []) {
     };
     return approvedRequest;
   });
-  await saveRequestsSafely("aprovação de compra");
+  persistRequestsLocally();
   if (approvedRequest) openApprovalEmailDraft(approvedRequest, "");
+  await saveRequestsSafely("aprovação de compra");
   render();
   renderApprovalQueue();
 }
@@ -4984,11 +5000,12 @@ async function savePurchaseDelivery(id, purchaseOrder, deliveryDate, buyerNote =
     };
     return updatedRequest;
   });
-  if (updatedRequest) prepareMailPopup();
-  await saveRequestsSafely("atualização de compras");
   if (updatedRequest) {
+    prepareMailPopup();
+    persistRequestsLocally();
     openPurchaseEmailDraft(updatedRequest, "");
   }
+  await saveRequestsSafely("atualização de compras");
   render();
 }
 
@@ -5146,9 +5163,8 @@ function openMailDraft(to, subject, bodyText) {
   flushSupabaseWrites();
   const popup = isPopupUsable(preparedMailPopup) ? preparedMailPopup : prepareMailPopup();
   preparedMailPopup = null;
-  refreshEmailSettingsCache().finally(() => {
-    openMailDraftInOutlookWeb(recipients, subject, bodyText, popup);
-  });
+  openMailDraftInOutlookWeb(recipients, subject, bodyText, popup);
+  refreshEmailSettingsCache().catch(() => {});
 }
 
 async function refreshEmailSettingsCache() {
