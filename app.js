@@ -7,6 +7,7 @@ const NOTIFICATION_READ_KEY = "pecas-transporte-notificacoes-lidas";
 const CUSTOM_PARTS_KEY = "pecas-transporte-pecas-cadastradas";
 const PART_REGISTRATIONS_KEY = "pecas-transporte-cadastros-pecas";
 const EMAIL_SETTINGS_KEY = "pecas-transporte-email-config";
+const REQUEST_SUBMIT_LOCK_KEY = "pecas-transporte-envio-solicitacao-lock";
 const supabaseClient = window.manuPecasSupabase || null;
 
 const partsCatalog = Array.isArray(globalThis.PARTS_CATALOG) ? globalThis.PARTS_CATALOG : [];
@@ -302,8 +303,17 @@ form.addEventListener("submit", async (event) => {
       almoxBy: "",
       almoxByEmail: "",
     };
+    const submitSignature = getRequestDuplicateSignature(draftRequest);
+    const lockedRequestId = getRecentRequestSubmitLock(submitSignature);
+    if (lockedRequestId) {
+      window.alert(`Esta solicitação já está sendo registrada${lockedRequestId !== "registrando" ? ` como ${lockedRequestId}` : ""}. Aguarde alguns segundos antes de enviar novamente.`);
+      return;
+    }
+
     const recentDuplicate = findRecentDuplicateRequest(draftRequest);
-    const request = recentDuplicate || { ...draftRequest, id: makeLocalRequestCode() };
+    if (!recentDuplicate) lockRequestSubmit(submitSignature, "registrando");
+    const request = recentDuplicate || { ...draftRequest, id: await makeCode(), duplicateSignature: submitSignature };
+    if (!recentDuplicate) lockRequestSubmit(submitSignature, request.id);
 
     if (!recentDuplicate) {
       requests = [request, ...requests];
@@ -350,6 +360,7 @@ form.addEventListener("submit", async (event) => {
         .catch((error) => console.warn("Solicitação registrada localmente, mas a sincronização posterior falhou.", error));
     }
   } catch (error) {
+    clearRequestSubmitLock();
     closePreparedMailPopup();
     setSupabaseStatus("error", "Erro ao registrar solicitação");
     console.error("Erro ao registrar solicitação:", error);
@@ -571,6 +582,9 @@ async function startApp() {
     await saveRequestsSafely("cadastro de item");
     saveCustomParts();
     savePartRegistrations();
+  }
+  if (applyCompletedPartRegistrationsToRequests()) {
+    await saveRequestsSafely("cadastros SAP concluídos");
   }
   if (repairRejectedCancellationsStuckInReview()) {
     await saveRequestsSafely("cancelamentos recusados");
@@ -1283,6 +1297,9 @@ async function syncFromSupabase() {
       partRegistrations = remotePartRegistrations;
       localStorage.setItem(PART_REGISTRATIONS_KEY, JSON.stringify(partRegistrations));
     }
+    if (applyCompletedPartRegistrationsToRequests()) {
+      await saveRequestsSafely("cadastros SAP concluídos");
+    }
     if (remoteEmailSettings) {
       emailSettings = normalizeEmailSettings(remoteEmailSettings);
       localStorage.setItem(EMAIL_SETTINGS_KEY, JSON.stringify(emailSettings));
@@ -1584,6 +1601,32 @@ function getRequestDuplicateSignature(request) {
   ].join("##");
 }
 
+function getRecentRequestSubmitLock(signature) {
+  try {
+    const lock = JSON.parse(localStorage.getItem(REQUEST_SUBMIT_LOCK_KEY) || "{}");
+    const lockAge = Date.now() - (Number(lock.createdAt) || 0);
+    if (lock.signature === signature && lockAge >= 0 && lockAge <= 5 * 60 * 1000) {
+      return lock.requestId || "registrando";
+    }
+  } catch {
+    return "";
+  }
+  return "";
+}
+
+function lockRequestSubmit(signature, requestId = "registrando") {
+  if (!signature) return;
+  localStorage.setItem(REQUEST_SUBMIT_LOCK_KEY, JSON.stringify({
+    signature,
+    requestId,
+    createdAt: Date.now(),
+  }));
+}
+
+function clearRequestSubmitLock() {
+  localStorage.removeItem(REQUEST_SUBMIT_LOCK_KEY);
+}
+
 function isRequestEarlyStage(request) {
   if (!request) return false;
   const displayStatus = getDisplayStatus(request);
@@ -1618,7 +1661,7 @@ function findRecentDuplicateRequest(draftRequest) {
   return requests.find((request) =>
     isRequestEarlyStage(request)
     && getRequestDuplicateSignature(request) === signature
-    && areRequestsCreatedClose(request, draftRequest, 0.5)
+    && areRequestsCreatedClose(request, draftRequest, 5)
   );
 }
 
@@ -2420,6 +2463,7 @@ function formatRequestCode(number) {
 function render() {
   if (!currentUser) return;
 
+  clearAutofilledQueueFilters();
   updateCopy();
   updateMetrics();
   updateNotificationBadge();
@@ -2541,30 +2585,55 @@ function hardenQueueFiltersAgainstAutofill() {
     input.setAttribute("autocomplete", "new-password");
     input.setAttribute("data-lpignore", "true");
     input.setAttribute("data-form-type", "other");
+    input.setAttribute("aria-autocomplete", "none");
+    input.name = `manupecas-filtro-${Math.random().toString(36).slice(2)}`;
+    input.readOnly = true;
     input.defaultValue = "";
+    input.addEventListener("focus", () => {
+      input.readOnly = false;
+      if (isAutofilledQueueFilterValue(input.value)) input.value = "";
+    });
+    input.addEventListener("blur", () => {
+      input.readOnly = false;
+      if (isAutofilledQueueFilterValue(input.value)) {
+        input.value = "";
+        render();
+      }
+    });
   });
 }
 
 function scheduleQueueFilterAutofillCleanup() {
-  [0, 150, 600, 1500].forEach((delay) => {
+  [0, 150, 600, 1500, 3000, 5000, 8000].forEach((delay) => {
     window.setTimeout(() => {
       if (clearAutofilledQueueFilters() && currentPage === "pending") render();
     }, delay);
   });
+  ["focus", "pageshow", "visibilitychange"].forEach((eventName) => {
+    window.addEventListener(eventName, () => {
+      window.setTimeout(() => {
+        if (clearAutofilledQueueFilters() && currentPage === "pending") render();
+      }, 50);
+    });
+  });
 }
 
-function clearAutofilledQueueFilters() {
+function isAutofilledQueueFilterValue(value) {
+  const text = String(value || "").trim();
+  if (!text) return false;
   const knownLogins = new Set([
     ...Object.keys(getAllAccounts()),
     currentUser?.email,
   ].filter(Boolean).map(normalizeLogin));
+  const compact = normalizeLogin(text);
+  return knownLogins.has(compact) || /^[a-z]+[._-][a-z]+$/i.test(text) || text.includes("@");
+}
+
+function clearAutofilledQueueFilters() {
   let changed = false;
   [queueRequestFilter, queuePartFilter, queueCarFilter].forEach((input) => {
     if (!input) return;
-    const value = String(input.value || "").trim();
-    const compact = normalizeLogin(value);
-    const looksLikeUserLogin = knownLogins.has(compact) || /^[a-z]+[._-][a-z]+$/i.test(value) || value.includes("@");
-    if (looksLikeUserLogin) {
+    if (isAutofilledQueueFilterValue(input.value)) {
       input.value = "";
       changed = true;
     }
@@ -4364,6 +4433,74 @@ function getRegistrationRequest(registration) {
   }) || null;
 }
 
+function getRegistrationDescription(registration) {
+  return normalizeSearchText(registration?.description || registration?.createdDescription || "");
+}
+
+function getRegistrationOriginalCode(registration) {
+  const value = String(registration?.originalCode || "").trim();
+  if (!value || /^sem c[oó]digo/i.test(value)) return "";
+  return normalizeSearchText(value);
+}
+
+function isItemLinkedToPartRegistration(item, registrationId, registration) {
+  if (!isPendingRegistrationItem(item)) return false;
+  if (registrationId && item.pendingRegistrationId === registrationId) return true;
+
+  const itemDescription = normalizeSearchText(item.description || "");
+  const registrationDescription = getRegistrationDescription(registration);
+  if (!itemDescription || !registrationDescription || itemDescription !== registrationDescription) return false;
+
+  const registrationOriginalCode = getRegistrationOriginalCode(registration);
+  if (!registrationOriginalCode) return true;
+
+  const itemOriginalCode = normalizeSearchText(item.pendingOriginalCode || "");
+  return !itemOriginalCode || itemOriginalCode === registrationOriginalCode;
+}
+
+function applyCompletedPartRegistrationsToRequests() {
+  const completedRegistrations = partRegistrations.filter((item) => item.status === "done" && item.createdCode && item.createdDescription);
+  if (completedRegistrations.length === 0) return false;
+
+  let changed = false;
+  requests = requests.map((request) => {
+    let requestChanged = false;
+    let items = request.items || [];
+
+    completedRegistrations.forEach((registration) => {
+      items = items.map((item) => {
+        if (!isItemLinkedToPartRegistration(item, registration.id, registration)) return item;
+        requestChanged = true;
+        return {
+          ...item,
+          code: String(registration.createdCode || "").trim(),
+          description: String(registration.createdDescription || registration.description || "").trim(),
+          isPendingRegistration: false,
+          pendingRegistrationId: "",
+          pendingOriginalCode: "",
+          pendingPhotoName: "",
+          pendingPhotoDataUrl: "",
+        };
+      });
+    });
+
+    if (!requestChanged) return request;
+    changed = true;
+    const hasPendingRegistration = items.some(isPendingRegistrationItem);
+    return {
+      ...request,
+      items,
+      status: hasPendingRegistration ? "cadastro" : "solicitacao",
+      response: hasPendingRegistration
+        ? request.response || "Solicitação aguardando cadastro de item."
+        : "Cadastro SAP concluído. Solicitação liberada para atendimento do Almoxarifado.",
+    };
+  });
+
+  if (changed) localStorage.setItem(REQUESTS_KEY, JSON.stringify(requests));
+  return changed;
+}
+
 async function completePartRegistration(id, code, finalDescription, useExisting = false) {
   if (!canManagePartRegistrations()) return;
   const cleanCode = String(code || "").trim();
@@ -4386,11 +4523,7 @@ async function completePartRegistration(id, code, finalDescription, useExisting 
   requests = requests.map((request) => {
     let changed = false;
     const items = request.items.map((item) => {
-      const matchesRegistration = item.pendingRegistrationId === id;
-      const matchesLegacyPending = isPendingRegistrationItem(item)
-        && String(item.description || "").toLowerCase() === registration.description.toLowerCase()
-        && String(item.pendingOriginalCode || "").toLowerCase() === registration.originalCode.toLowerCase();
-      if (!matchesRegistration && !matchesLegacyPending) return item;
+      if (!isItemLinkedToPartRegistration(item, id, registration)) return item;
       changed = true;
       return {
         ...item,
